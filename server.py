@@ -536,12 +536,13 @@ def host_config(
     binds: list[str],
     port_bindings: dict | None = None,
     shm_size: int | None = None,
+    use_gpu: bool = True,
 ) -> dict:
     config = {
         "Binds": binds,
         "NetworkMode": network_name,
         "RestartPolicy": {"Name": "unless-stopped"},
-        "DeviceRequests": model_device_requests(),
+        "DeviceRequests": model_device_requests() if use_gpu else [],
     }
     if port_bindings:
         config["PortBindings"] = port_bindings

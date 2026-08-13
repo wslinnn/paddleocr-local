@@ -628,6 +628,15 @@ class ServerTaskApiTests(unittest.TestCase):
         finally:
             self.server.set_model_runtime_operation("idle", "", "paddleocr-vl-1.6")
 
+    def test_host_config_requests_gpu_by_default(self):
+        cfg = self.server.host_config(network_name="net", binds=[])
+        self.assertEqual(len(cfg["DeviceRequests"]), 1)
+        self.assertEqual(cfg["DeviceRequests"][0]["Driver"], "nvidia")
+
+    def test_host_config_can_disable_gpu_for_cpu_services(self):
+        cfg = self.server.host_config(network_name="net", binds=[], use_gpu=False)
+        self.assertEqual(cfg["DeviceRequests"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
