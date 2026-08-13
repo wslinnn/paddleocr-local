@@ -1796,6 +1796,7 @@ function syncResultMode(task) {
 
 function isPPOCRVisualTask(task) {
     return task?.modelId === 'pp-ocrv6'
+        || task?.modelId === 'pp-ocrv6-rapid'
         || Boolean(task?.ocrResults?.some((pageResult) => pageResult?.parser === 'pp-ocrv6'));
 }
 
