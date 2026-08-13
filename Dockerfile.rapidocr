@@ -10,10 +10,12 @@ RUN apt-get update && \
       libgl1 && \
     rm -rf /var/lib/apt/lists/*
 
-# rapidocr[onnxruntime] pulls onnxruntime and the PP-OCRv6 default models
-# (downloaded lazily to /root/.cache/rapidocr on first run).
+# rapidocr core + onnxruntime engine. Install onnxruntime explicitly: the
+# rapidocr[onnxruntime] extra does not reliably pull it in. PP-OCRv6 default
+# models are downloaded lazily to /root/.cache/rapidocr on first run.
 RUN pip install --no-cache-dir \
-      "rapidocr[onnxruntime]" \
+      rapidocr \
+      onnxruntime \
       pymupdf==1.24.10 \
       Pillow==11.3.0 \
       fastapi==0.136.1 \
