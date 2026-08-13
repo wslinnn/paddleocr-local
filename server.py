@@ -104,6 +104,13 @@ OVISOCR2_MAX_TOKENS = os.getenv("OVISOCR2_MAX_TOKENS", "8192")
 OVISOCR2_PDF_DPI = os.getenv("OVISOCR2_PDF_DPI", "200")
 OVISOCR2_MAX_PAGES_PER_REQUEST = os.getenv("OVISOCR2_MAX_PAGES_PER_REQUEST", "50")
 OVISOCR2_GDN_PREFILL_BACKEND = os.getenv("OVISOCR2_GDN_PREFILL_BACKEND", "triton")
+RAPIDOCR_SERVICE_URL = os.getenv("RAPIDOCR_SERVICE_URL", "http://localhost:8085/ocr")
+RAPIDOCR_API_PORT = os.getenv("RAPIDOCR_API_PORT", "8085")
+RAPIDOCR_MODEL_NAME = os.getenv("RAPIDOCR_MODEL_NAME", "PP-OCRv6_medium_rapid")
+RAPIDOCR_MODEL_TIER = os.getenv("RAPIDOCR_MODEL_TIER", "medium").strip().lower()
+RAPIDOCR_PDF_DPI = os.getenv("RAPIDOCR_PDF_DPI", "200")
+RAPIDOCR_MAX_PAGES_PER_REQUEST = os.getenv("RAPIDOCR_MAX_PAGES_PER_REQUEST", "50")
+ENABLE_RAPIDOCR = parse_bool_env("PANDOCR_ENABLE_RAPIDOCR", "0")
 UNLIMITED_OCR_SGLANG_WHEEL_URL = os.getenv(
     "UNLIMITED_OCR_SGLANG_WHEEL_URL",
     "https://github.com/baidu/Unlimited-OCR/raw/main/wheel/sglang-0.0.0.dev11416%2Bg92e8bb79e-py3-none-any.whl",
@@ -168,7 +175,7 @@ def initial_unlimited_ocr_backend() -> str:
 
 
 def parse_model_catalog() -> list[str]:
-    supported = {"paddleocr-vl-1.6", "pp-ocrv6", "unlimited-ocr", "ovisocr2"}
+    supported = {"paddleocr-vl-1.6", "pp-ocrv6", "unlimited-ocr", "ovisocr2", "pp-ocrv6-rapid"}
     if MODEL_CATALOG_ENV:
         ids = [model_id for model_id in parse_csv_env("PANDOCR_MODEL_CATALOG", "") if model_id in supported]
     else:
@@ -177,6 +184,8 @@ def parse_model_catalog() -> list[str]:
             ids.append("unlimited-ocr")
         if ENABLE_OVISOCR2:
             ids.append("ovisocr2")
+        if ENABLE_RAPIDOCR:
+            ids.append("pp-ocrv6-rapid")
 
     unique_ids = []
     for model_id in ids:
@@ -188,6 +197,7 @@ def parse_model_catalog() -> list[str]:
 MODEL_CATALOG_IDS = parse_model_catalog()
 ENABLE_UNLIMITED_OCR = ENABLE_UNLIMITED_OCR or "unlimited-ocr" in MODEL_CATALOG_IDS
 ENABLE_OVISOCR2 = ENABLE_OVISOCR2 or "ovisocr2" in MODEL_CATALOG_IDS
+ENABLE_RAPIDOCR = ENABLE_RAPIDOCR or "pp-ocrv6-rapid" in MODEL_CATALOG_IDS
 
 MODEL_RUNTIME_CONFIG = {
     "paddleocr-vl-1.6": {
@@ -218,6 +228,14 @@ if ENABLE_OVISOCR2:
         "start_order": ["ovisocr2-api"],
         "stop_order": ["ovisocr2-api"],
         "health_url": OVISOCR2_SERVICE_URL.rsplit("/", 1)[0] + "/health",
+    }
+
+if ENABLE_RAPIDOCR:
+    MODEL_RUNTIME_CONFIG["pp-ocrv6-rapid"] = {
+        "containers": ["rapidocr-api"],
+        "start_order": ["rapidocr-api"],
+        "stop_order": ["rapidocr-api"],
+        "health_url": RAPIDOCR_SERVICE_URL.rsplit("/", 1)[0] + "/health",
     }
 
 DEFAULT_RUNTIME_FALLBACK_MODEL_ID = next(
@@ -287,6 +305,13 @@ def model_catalog() -> list[dict]:
             "label": "OvisOCR2",
             "kind": "document_parsing",
             "endpoint": "/api/ovisocr2",
+        },
+        "pp-ocrv6-rapid": {
+            "id": "pp-ocrv6-rapid",
+            "name": RAPIDOCR_MODEL_NAME,
+            "label": "PP-OCRv6 (RapidOCR·CPU)",
+            "kind": "text_ocr",
+            "endpoint": "/api/pp-ocrv6-rapid",
         },
     }
     return [

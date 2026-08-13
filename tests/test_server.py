@@ -656,6 +656,23 @@ class ServerTaskApiTests(unittest.TestCase):
         self.assertEqual(page["parser"], "pp-ocrv6-rapid")
         self.assertEqual(page["model"], "PP-OCRv6_medium_rapid")
 
+    def test_model_catalog_includes_rapid_when_enabled(self):
+        with (
+            patch.object(self.server, "MODEL_CATALOG_ENV", "pp-ocrv6-rapid"),
+            patch.object(self.server, "MODEL_CATALOG_IDS", ["pp-ocrv6-rapid"]),
+            patch.object(
+                self.server,
+                "MODEL_RUNTIME_CONFIG",
+                {"pp-ocrv6-rapid": {"containers": ["rapidocr-api"], "health_url": "http://localhost:8085/health"}},
+            ),
+        ):
+            response = self.client.get("/api/models")
+        ids = [m["id"] for m in response.json()["data"]]
+        self.assertIn("pp-ocrv6-rapid", ids)
+        rapid = next(m for m in response.json()["data"] if m["id"] == "pp-ocrv6-rapid")
+        self.assertEqual(rapid["kind"], "text_ocr")
+        self.assertEqual(rapid["endpoint"], "/api/pp-ocrv6-rapid")
+
 
 if __name__ == "__main__":
     unittest.main()
