@@ -26,24 +26,25 @@ INFERENCE_LOCK = asyncio.Lock()
 
 def boxes_to_bbox(box):
     """4-point polygon -> axis-aligned bounding box [x1, y1, x2, y2]."""
-    xs = [point[0] for point in box]
-    ys = [point[1] for point in box]
+    xs = [float(point[0]) for point in box]
+    ys = [float(point[1]) for point in box]
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
 def to_ppocr_page(txts, scores, boxes, page_index: int = 0) -> dict:
     """Convert one RapidOCR page result into the paddleocr-ocr-api prunedResult shape.
 
-    Aligns with server.parse_ppocr_response so the main service can reuse it:
-    rec_texts / rec_scores / rec_boxes (axis-aligned) / rec_polys (4-point).
+    RapidOCR returns boxes as a numpy array (N×4×2) and txts/scores as tuples,
+    so we avoid `boxes or []` (numpy's truth value is ambiguous on multi-element
+    arrays) and coerce every value to a native Python type for JSON serialization.
     """
-    boxes = list(boxes or [])
+    box_list = list(boxes) if boxes is not None else []
     return {
         "prunedResult": {
-            "rec_texts": list(txts or []),
-            "rec_scores": list(scores or []),
-            "rec_boxes": [boxes_to_bbox(box) for box in boxes],
-            "rec_polys": [[list(point) for point in box] for box in boxes],
+            "rec_texts": [str(text) for text in (txts or ())],
+            "rec_scores": [float(score) for score in (scores or ())],
+            "rec_boxes": [boxes_to_bbox(box) for box in box_list],
+            "rec_polys": [[[float(p[0]), float(p[1])] for p in box] for box in box_list],
             "page_index": page_index,
         },
         "inputImage": None,
@@ -186,5 +187,5 @@ async def ocr(request: Request):
     async with INFERENCE_LOCK:
         for index, image in enumerate(pages):
             txts, scores, boxes = await asyncio.to_thread(run_one, engine, image)
-            pages_result.append(to_ppocr_page(txts, scores, boxes or [], page_index=index))
+            pages_result.append(to_ppocr_page(txts, scores, boxes, page_index=index))
     return build_response(pages_result, resolved_type)
