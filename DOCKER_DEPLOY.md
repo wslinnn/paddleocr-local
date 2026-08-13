@@ -2,7 +2,7 @@
 
 ## 服务组成
 
-`docker-compose.yml` 包含常驻 WebUI、PaddleOCR 服务和两个可选 profile：
+`docker-compose.yml` 包含常驻 WebUI、PaddleOCR 服务和三个可选 profile（unlimited-ocr / ovisocr2 / rapidocr）：
 
 | 服务 | 作用 | 对外端口 |
 | --- | --- | --- |
@@ -12,10 +12,23 @@
 | `unlimited-ocr-api` | Unlimited-OCR 适配服务（可选） | `8083:8080` |
 | `unlimited-ocr-sglang` | Unlimited-OCR SGLang 推理（按 backend 可选） | `10000:10000` |
 | `ovisocr2-api` | OvisOCR2 独立 vLLM 推理（可选） | `8084:8080` |
+| `rapidocr-api` | RapidOCR 纯 CPU OCR（PP-OCRv6 onnx，可选） | `8085:8080` |
 | `pandocr-web` | WebUI、FastAPI 代理、Office 转 PDF | `8000:8000` |
 
 单 GPU 部署默认只热加载一个模型：`pandocr-web` 挂载 Docker socket，并通过 Docker Engine API 在 `PaddleOCR-VL 1.6`、`PP-OCRv6`、`Unlimited-OCR`、`OvisOCR2` 之间切换对应容器。Docker socket 等同于宿主机管理权限，请勿把 WebUI 暴露给不可信网络。
 解析历史会通过 `./data:/app/data` 挂载保存到宿主机，默认路径为 `data/tasks/`。
+
+## RapidOCR 纯 CPU 精简部署
+
+如果你的机器**没有 GPU**，只需要 PP-OCRv6 文字识别，使用独立的精简 compose 文件，仅启动 WebUI 和 RapidOCR（CPU，onnxruntime）两个服务，无需 NVIDIA driver：
+
+```bash
+docker compose -f docker-compose.rapidocr.yml up -d --build
+```
+
+启动后访问 http://localhost:8000 ，模型下拉默认只有 `PP-OCRv6 (RapidOCR·CPU)` 并自动激活。PP-OCRv6 onnx 模型在首次请求时下载到 `./model_cache_rapidocr` 缓存。可调环境变量见 `docker-compose.rapidocr.yml`（`RAPIDOCR_MODEL_TIER` 取 `tiny` / `small` / `medium`，默认 `medium`）。
+
+> 多模型共存场景：在主 `docker-compose.yml` 中 `docker compose --profile rapidocr up -d`，RapidOCR 作为一个可选 profile 与其他模型共存。
 
 ## 推荐配置
 
