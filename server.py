@@ -2093,7 +2093,12 @@ def extract_ppocr_lines(pruned_result: dict) -> list[dict]:
     return lines
 
 
-def parse_ppocr_response(data: dict) -> dict:
+def parse_ppocr_response(
+    data: dict,
+    *,
+    model_name: str = PPOCR_V6_MODEL_NAME,
+    parser_name: str = "pp-ocrv6",
+) -> dict:
     if "result" not in data or "ocrResults" not in data["result"]:
         logger.warning("Unexpected PP-OCR response format: %s", data)
         raise HTTPException(status_code=500, detail="Unexpected response format from PP-OCR service")
@@ -2112,8 +2117,8 @@ def parse_ppocr_response(data: dict) -> dict:
 
         pages.append(
             {
-                "model": PPOCR_V6_MODEL_NAME,
-                "parser": "pp-ocrv6",
+                "model": model_name,
+                "parser": parser_name,
                 "page_index": pruned.get("page_index", page_index),
                 "pageImage": page_result.get("inputImage") if isinstance(page_result, dict) else None,
                 "markdown": {

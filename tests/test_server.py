@@ -637,6 +637,25 @@ class ServerTaskApiTests(unittest.TestCase):
         cfg = self.server.host_config(network_name="net", binds=[], use_gpu=False)
         self.assertEqual(cfg["DeviceRequests"], [])
 
+    def test_parse_ppocr_response_defaults_to_ppocrv6_parser(self):
+        sample = {"result": {"ocrResults": [{"prunedResult": {
+            "rec_texts": ["hi"], "rec_scores": [0.9], "rec_boxes": [[0, 0, 1, 1]],
+            "rec_polys": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+        }}]}}
+        page = self.server.parse_ppocr_response(sample)["layoutParsingResults"][0]
+        self.assertEqual(page["parser"], "pp-ocrv6")
+
+    def test_parse_ppocr_response_accepts_custom_model_and_parser(self):
+        sample = {"result": {"ocrResults": [{"prunedResult": {
+            "rec_texts": ["hi"], "rec_scores": [0.9], "rec_boxes": [[0, 0, 1, 1]],
+            "rec_polys": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+        }}]}}
+        page = self.server.parse_ppocr_response(
+            sample, model_name="PP-OCRv6_medium_rapid", parser_name="pp-ocrv6-rapid"
+        )["layoutParsingResults"][0]
+        self.assertEqual(page["parser"], "pp-ocrv6-rapid")
+        self.assertEqual(page["model"], "PP-OCRv6_medium_rapid")
+
 
 if __name__ == "__main__":
     unittest.main()
