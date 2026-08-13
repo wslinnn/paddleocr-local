@@ -44,6 +44,12 @@ services:
       - PANDOCR_MODEL_CONTROL=docker
       - PANDOCR_TASK_DATA_DIR=/app/data/tasks
       - PANDOCR_CORS_ORIGINS=${PANDOCR_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      # Origin check is off by default for this CPU-only personal OCR deployment:
+      # the app authenticates via an optional header token (PANDOCR_API_TOKEN),
+      # which is inherently CSRF-proof, so the Origin allowlist adds friction
+      # (especially behind reverse proxies) without real security value.
+      # Expose publicly? Set PANDOCR_API_TOKEN. Re-enable check? Set this to 1.
+      - PANDOCR_ENFORCE_ORIGIN_CHECK=${PANDOCR_ENFORCE_ORIGIN_CHECK:-0}
       - PANDOCR_MAX_UPLOAD_MB=${PANDOCR_MAX_UPLOAD_MB:-512}
       - PANDOCR_MAX_CONCURRENT_OCR=${PANDOCR_MAX_CONCURRENT_OCR:-1}
       - PANDOCR_API_TOKEN=${PANDOCR_API_TOKEN:-}

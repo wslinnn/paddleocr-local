@@ -32,7 +32,9 @@ docker compose -f docker-compose.rapidocr.yml up -d --build
 
 ## 反向代理 / HTTPS 部署
 
-服务端默认开启 origin 校验（`PANDOCR_ENFORCE_ORIGIN_CHECK=1`），并已启用 `proxy_headers`，会信任反向代理传入的 `X-Forwarded-Proto`。用 OpenResty / nginx 反向代理时，**必须转发下面两个头**，否则浏览器看到的源（如 `https://your.domain`）与容器内看到的源（`http://...`）不一致，上传会报 `Cross-origin API request is not allowed`：
+**RapidOCR 精简部署（`docker-compose.rapidocr.yml`）默认关闭 origin 校验**（`PANDOCR_ENFORCE_ORIGIN_CHECK=0`）：任意域名 / 端口 / 协议 / 反向代理零配置直连即可。该应用鉴权走可选的 header token（`PANDOCR_API_TOKEN`），天生防 CSRF，origin 白名单在反代下只增加摩擦而无安全价值。公网暴露请设 `PANDOCR_API_TOKEN`，这才是有效的访问控制。
+
+主 `docker-compose.yml`（多模型 GPU 部署）默认仍开启 origin 校验，服务端已启用 `proxy_headers` 信任 `X-Forwarded-Proto`。用 OpenResty / nginx 反代时转发以下两个头即可让校验自动识别外部源：
 
 ```nginx
 location / {
@@ -43,13 +45,7 @@ location / {
 }
 ```
 
-若代理不便转发这些头，可在 `.env` 中显式放行你的访问源：
-
-```text
-PANDOCR_CORS_ORIGINS=https://your.domain
-```
-
-或个人内网用直接关闭校验：`PANDOCR_ENFORCE_ORIGIN_CHECK=0`。
+不便转发这些头时，可在 `.env` 放行访问源 `PANDOCR_CORS_ORIGINS=https://your.domain`，或直接关闭校验 `PANDOCR_ENFORCE_ORIGIN_CHECK=0`。
 
 ## 推荐配置
 
