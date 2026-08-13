@@ -393,6 +393,8 @@ def docker_image_name_for(service_name: str) -> str:
         return "pandocr-unlimited-ocr-sglang:latest"
     if service_name == "ovisocr2-api":
         return "pandocr-ovisocr2:latest"
+    if service_name == "rapidocr-api":
+        return "pandocr-rapidocr:latest"
     raise ValueError(f"Unknown service image: {service_name}")
 
 
@@ -430,6 +432,7 @@ def dockerfile_path_for(service_name: str) -> Path:
         "unlimited-ocr-api": "Dockerfile.unlimited-ocr",
         "unlimited-ocr-sglang": "Dockerfile.unlimited-ocr-sglang",
         "ovisocr2-api": "Dockerfile.ovisocr2",
+        "rapidocr-api": "Dockerfile.rapidocr",
     }
     dockerfile_name = dockerfile_names.get(service_name)
     if not dockerfile_name:
@@ -460,6 +463,7 @@ def make_docker_build_context(service_name: str) -> bytes:
             "unlimited-ocr-api": "unlimited_ocr_adapter.py",
             "unlimited-ocr-sglang": "unlimited_ocr_adapter.py",
             "ovisocr2-api": "ovisocr2_adapter.py",
+            "rapidocr-api": "rapidocr_adapter.py",
         }
         if service_name in adapter_names:
             adapter_name = adapter_names[service_name]
@@ -755,6 +759,26 @@ def container_payload_for(service_name: str, *, host_root: str, network_name: st
             ),
             "Healthcheck": healthcheck("curl -f http://localhost:8080/health || exit 1", 900),
         }
+    if service_name == "rapidocr-api":
+        return {
+            "Image": image,
+            "Cmd": ["uvicorn", "rapidocr_adapter:app", "--host", "0.0.0.0", "--port", "8080"],
+            "Env": [
+                f"RAPIDOCR_MODEL_TIER={RAPIDOCR_MODEL_TIER}",
+                f"RAPIDOCR_PDF_DPI={RAPIDOCR_PDF_DPI}",
+                f"RAPIDOCR_MAX_PAGES_PER_REQUEST={RAPIDOCR_MAX_PAGES_PER_REQUEST}",
+                f"RAPIDOCR_MODEL_NAME={RAPIDOCR_MODEL_NAME}",
+            ],
+            "User": "root",
+            "ExposedPorts": {"8080/tcp": {}},
+            "HostConfig": host_config(
+                network_name=network_name,
+                binds=[bind_path(host_root, "model_cache_rapidocr", "/root/.cache/rapidocr")],
+                port_bindings={"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": RAPIDOCR_API_PORT}]},
+                use_gpu=False,
+            ),
+            "Healthcheck": healthcheck("curl -f http://localhost:8080/health || exit 1", 120),
+        }
     raise ValueError(f"Unknown deploy service: {service_name}")
 
 
@@ -783,6 +807,8 @@ def services_for_model_deploy(model_id: str, backend: str | None = None) -> list
         return services
     if model_id == "ovisocr2":
         return ["ovisocr2-api"]
+    if model_id == "pp-ocrv6-rapid":
+        return ["rapidocr-api"]
     raise ValueError(f"Unknown model id: {model_id}")
 
 

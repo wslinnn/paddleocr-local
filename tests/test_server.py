@@ -673,6 +673,17 @@ class ServerTaskApiTests(unittest.TestCase):
         self.assertEqual(rapid["kind"], "text_ocr")
         self.assertEqual(rapid["endpoint"], "/api/pp-ocrv6-rapid")
 
+    def test_rapidocr_deploy_is_cpu_only(self):
+        self.assertEqual(self.server.services_for_model_deploy("pp-ocrv6-rapid"), ["rapidocr-api"])
+        self.assertEqual(self.server.docker_image_name_for("rapidocr-api"), "pandocr-rapidocr:latest")
+        payload = self.server.container_payload_for("rapidocr-api", host_root="/repo", network_name="net")
+        self.assertEqual(payload["Cmd"][:2], ["uvicorn", "rapidocr_adapter:app"])
+        self.assertEqual(payload["HostConfig"]["DeviceRequests"], [])
+        env = " ".join(payload["Env"])
+        self.assertIn("RAPIDOCR_MODEL_TIER", env)
+        bindings = payload["HostConfig"]["PortBindings"]["8080/tcp"][0]
+        self.assertEqual(bindings["HostPort"], self.server.RAPIDOCR_API_PORT)
+
 
 if __name__ == "__main__":
     unittest.main()
