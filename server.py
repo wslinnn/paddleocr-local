@@ -2374,6 +2374,35 @@ async def run_ppocrv6_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -
         await release_ocr_slot()
 
 
+async def run_rapidocr_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
+    await acquire_ocr_slot(
+        "pp-ocrv6-rapid",
+        "RapidOCR service is not ready. Switch to this model and wait for it to become ready.",
+    )
+    try:
+        base64_data, file_type = prepare_service_input(ocr_request, raw_input)
+        payload = build_ppocr_payload(ocr_request, base64_data, file_type)
+
+        logger.info("Sending request to RapidOCR adapter at %s", RAPIDOCR_SERVICE_URL)
+        timeout = PADDLE_REQUEST_TIMEOUT if PADDLE_REQUEST_TIMEOUT > 0 else None
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                RAPIDOCR_SERVICE_URL,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            if resp.status_code != 200:
+                logger.warning("RapidOCR Service Error (HTTP %s): %s", resp.status_code, resp.text)
+                raise HTTPException(status_code=resp.status_code, detail=f"Upstream RapidOCR error: {resp.text}")
+            return parse_ppocr_response(
+                resp.json(),
+                model_name=RAPIDOCR_MODEL_NAME,
+                parser_name="pp-ocrv6-rapid",
+            )
+    finally:
+        await release_ocr_slot()
+
+
 async def run_unlimited_ocr_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
     if not ENABLE_UNLIMITED_OCR:
         raise HTTPException(status_code=404, detail="Unlimited-OCR is not enabled")
@@ -2498,6 +2527,21 @@ async def proxy_ppocrv6(request: Request):
         raise
     except Exception as e:
         logger.exception("PP-OCRv6 Proxy Error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pp-ocrv6-rapid")
+async def proxy_rapidocr(request: Request):
+    """Proxy request to the RapidOCR (CPU) adapter service."""
+    try:
+        ocr_request, raw_image = await parse_ocr_input(request)
+        base64_size = validate_proxy_input_size(raw_image)
+        logger.info("Received RapidOCR request. Base64 input size: %s bytes", base64_size)
+        return await run_rapidocr_request(ocr_request, raw_image)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("RapidOCR Proxy Error")
         raise HTTPException(status_code=500, detail=str(e))
 
 

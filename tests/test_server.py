@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 from pypdf import PdfReader, PdfWriter
@@ -683,6 +683,42 @@ class ServerTaskApiTests(unittest.TestCase):
         self.assertIn("RAPIDOCR_MODEL_TIER", env)
         bindings = payload["HostConfig"]["PortBindings"]["8080/tcp"][0]
         self.assertEqual(bindings["HostPort"], self.server.RAPIDOCR_API_PORT)
+
+    def test_rapid_ocr_route_proxies_and_tags_parser(self):
+        upstream = {"result": {"ocrResults": [{"prunedResult": {
+            "rec_texts": ["x"], "rec_scores": [0.5], "rec_boxes": [[0, 0, 1, 1]],
+            "rec_polys": [[[0, 0], [1, 0], [1, 1], [0, 1]]],
+        }}]}}
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, **kwargs):
+                resp = Mock()
+                resp.status_code = 200
+                resp.json.return_value = upstream
+                resp.text = ""
+                return resp
+
+        with (
+            patch.object(self.server.httpx, "AsyncClient", FakeAsyncClient),
+            patch.object(self.server, "acquire_ocr_slot", new=AsyncMock()),
+            patch.object(self.server, "release_ocr_slot", new=AsyncMock()),
+        ):
+            response = self.client.post(
+                "/api/pp-ocrv6-rapid", json={"image": "AA==", "fileType": 1}
+            )
+        self.assertEqual(response.status_code, 200)
+        page = response.json()["layoutParsingResults"][0]
+        self.assertEqual(page["parser"], "pp-ocrv6-rapid")
+        self.assertEqual(page["model"], self.server.RAPIDOCR_MODEL_NAME)
 
 
 if __name__ == "__main__":
