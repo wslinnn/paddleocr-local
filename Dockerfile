@@ -20,8 +20,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 COPY unlimited_ocr_adapter.py .
 COPY ovisocr2_adapter.py .
+COPY rapidocr_adapter.py .
 COPY Dockerfile.ocr Dockerfile.unlimited-ocr Dockerfile.unlimited-ocr-sglang ./
 COPY Dockerfile.ovisocr2 ./
+COPY Dockerfile.rapidocr ./
 COPY static/ ./static/
 
 EXPOSE 8000

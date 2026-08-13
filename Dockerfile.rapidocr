@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      libglib2.0-0 \
+      libgl1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# rapidocr[onnxruntime] pulls onnxruntime and the PP-OCRv6 default models
+# (downloaded lazily to /root/.cache/rapidocr on first run).
+RUN pip install --no-cache-dir \
+      "rapidocr[onnxruntime]" \
+      pymupdf==1.24.10 \
+      Pillow==11.3.0 \
+      fastapi==0.136.1 \
+      uvicorn==0.46.0 \
+      python-multipart==0.0.27
+
+WORKDIR /app
+COPY rapidocr_adapter.py /app/rapidocr_adapter.py
+
+EXPOSE 8080
+CMD ["uvicorn", "rapidocr_adapter:app", "--host", "0.0.0.0", "--port", "8080"]

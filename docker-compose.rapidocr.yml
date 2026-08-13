@@ -1,0 +1,72 @@
+services:
+  rapidocr-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.rapidocr
+    image: pandocr-rapidocr:latest
+    container_name: rapidocr-api
+    ports:
+      - "127.0.0.1:${RAPIDOCR_API_PORT:-8085}:8080"
+    environment:
+      - RAPIDOCR_MODEL_TIER=${RAPIDOCR_MODEL_TIER:-medium}
+      - RAPIDOCR_PDF_DPI=${RAPIDOCR_PDF_DPI:-200}
+      - RAPIDOCR_MAX_PAGES_PER_REQUEST=${RAPIDOCR_MAX_PAGES_PER_REQUEST:-50}
+      - RAPIDOCR_MODEL_NAME=${RAPIDOCR_MODEL_NAME:-PP-OCRv6_medium_rapid}
+    restart: unless-stopped
+    volumes:
+      - ./model_cache_rapidocr:/root/.cache/rapidocr
+      - ./data:/app/data
+    command: uvicorn rapidocr_adapter:app --host 0.0.0.0 --port 8080
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - paddleocr-network
+
+  pandocr-web:
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pandocr-web:latest
+    container_name: pandocr-web
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+    environment:
+      - RAPIDOCR_SERVICE_URL=http://rapidocr-api:8080/ocr
+      - PANDOCR_ENABLE_RAPIDOCR=1
+      - PANDOCR_MODEL_CATALOG=pp-ocrv6-rapid
+      - PANDOCR_ACTIVE_MODEL_ON_START=pp-ocrv6-rapid
+      - PANDOCR_MODEL_CONTROL=docker
+      - PANDOCR_TASK_DATA_DIR=/app/data/tasks
+      - PANDOCR_CORS_ORIGINS=${PANDOCR_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      - PANDOCR_MAX_UPLOAD_MB=${PANDOCR_MAX_UPLOAD_MB:-512}
+      - PANDOCR_MAX_CONCURRENT_OCR=${PANDOCR_MAX_CONCURRENT_OCR:-1}
+      - PANDOCR_API_TOKEN=${PANDOCR_API_TOKEN:-}
+      - PANDOCR_ENABLE_API_DOCS=${PANDOCR_ENABLE_API_DOCS:-0}
+    volumes:
+      - ./static:/app/static
+      - ./server.py:/app/server.py
+      - ./rapidocr_adapter.py:/app/rapidocr_adapter.py:ro
+      - ./Dockerfile.rapidocr:/app/Dockerfile.rapidocr:ro
+      - ./data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      rapidocr-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - paddleocr-network
+
+networks:
+  paddleocr-network:
+    driver: bridge

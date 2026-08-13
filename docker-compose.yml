@@ -250,6 +250,34 @@ services:
     networks:
       - paddleocr-network
 
+  rapidocr-api:
+    profiles: ["rapidocr"]
+    container_name: rapidocr-api
+    ports:
+      - "127.0.0.1:${RAPIDOCR_API_PORT:-8085}:8080"
+    build:
+      context: .
+      dockerfile: Dockerfile.rapidocr
+    image: pandocr-rapidocr:latest
+    environment:
+      - RAPIDOCR_MODEL_TIER=${RAPIDOCR_MODEL_TIER:-medium}
+      - RAPIDOCR_PDF_DPI=${RAPIDOCR_PDF_DPI:-200}
+      - RAPIDOCR_MAX_PAGES_PER_REQUEST=${RAPIDOCR_MAX_PAGES_PER_REQUEST:-50}
+      - RAPIDOCR_MODEL_NAME=${RAPIDOCR_MODEL_NAME:-PP-OCRv6_medium_rapid}
+    restart: unless-stopped
+    volumes:
+      - ./model_cache_rapidocr:/root/.cache/rapidocr
+      - ./data:/app/data
+    command: uvicorn rapidocr_adapter:app --host 0.0.0.0 --port 8080
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - paddleocr-network
+
   pandocr-web:
     pull_policy: build
     build:
@@ -265,6 +293,7 @@ services:
       - PADDLE_OCR_SERVICE_URL=http://paddleocr-ocr-api:8080/ocr
       - UNLIMITED_OCR_SERVICE_URL=http://unlimited-ocr-api:8080/ocr
       - OVISOCR2_SERVICE_URL=http://ovisocr2-api:8080/ocr
+      - RAPIDOCR_SERVICE_URL=http://rapidocr-api:8080/ocr
       - VLM_BACKEND=${VLM_BACKEND:-vllm}
       - VLM_IMAGE_TAG_SUFFIX=${VLM_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
       - API_IMAGE_TAG_SUFFIX=${API_IMAGE_TAG_SUFFIX:-latest-nvidia-gpu-offline}
@@ -292,6 +321,7 @@ services:
       - OVISOCR2_GDN_PREFILL_BACKEND=${OVISOCR2_GDN_PREFILL_BACKEND:-triton}
       - PANDOCR_ENABLE_UNLIMITED_OCR=${PANDOCR_ENABLE_UNLIMITED_OCR:-0}
       - PANDOCR_ENABLE_OVISOCR2=${PANDOCR_ENABLE_OVISOCR2:-0}
+      - PANDOCR_ENABLE_RAPIDOCR=${PANDOCR_ENABLE_RAPIDOCR:-0}
       - PANDOCR_MODEL_CATALOG=${PANDOCR_MODEL_CATALOG:-}
       - PADDLE_REQUEST_TIMEOUT=${PADDLE_REQUEST_TIMEOUT:-3600}
       - PANDOCR_MODEL_CONTROL=${PANDOCR_MODEL_CONTROL:-docker}
@@ -313,6 +343,8 @@ services:
       - ./Dockerfile.unlimited-ocr-sglang:/app/Dockerfile.unlimited-ocr-sglang:ro
       - ./ovisocr2_adapter.py:/app/ovisocr2_adapter.py:ro
       - ./Dockerfile.ovisocr2:/app/Dockerfile.ovisocr2:ro
+      - ./rapidocr_adapter.py:/app/rapidocr_adapter.py:ro
+      - ./Dockerfile.rapidocr:/app/Dockerfile.rapidocr:ro
       - ./data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
     security_opt:
