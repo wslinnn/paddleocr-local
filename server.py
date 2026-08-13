@@ -2602,4 +2602,6 @@ if __name__ == "__main__":
     import uvicorn
 
     logger.info("Starting server. Target Pipeline: %s", PADDLE_SERVICE_URL)
-    uvicorn.run(app, host=PANDOCR_HOST, port=PANDOCR_PORT)
+    # proxy_headers: trust X-Forwarded-Proto/For from reverse proxies (OpenResty/nginx)
+    # so origin checks see the real external scheme/host instead of the in-container http.
+    uvicorn.run(app, host=PANDOCR_HOST, port=PANDOCR_PORT, proxy_headers=True)

@@ -30,6 +30,27 @@ docker compose -f docker-compose.rapidocr.yml up -d --build
 
 > 多模型共存场景：在主 `docker-compose.yml` 中 `docker compose --profile rapidocr up -d`，RapidOCR 作为一个可选 profile 与其他模型共存。
 
+## 反向代理 / HTTPS 部署
+
+服务端默认开启 origin 校验（`PANDOCR_ENFORCE_ORIGIN_CHECK=1`），并已启用 `proxy_headers`，会信任反向代理传入的 `X-Forwarded-Proto`。用 OpenResty / nginx 反向代理时，**必须转发下面两个头**，否则浏览器看到的源（如 `https://your.domain`）与容器内看到的源（`http://...`）不一致，上传会报 `Cross-origin API request is not allowed`：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+}
+```
+
+若代理不便转发这些头，可在 `.env` 中显式放行你的访问源：
+
+```text
+PANDOCR_CORS_ORIGINS=https://your.domain
+```
+
+或个人内网用直接关闭校验：`PANDOCR_ENFORCE_ORIGIN_CHECK=0`。
+
 ## 推荐配置
 
 先按显卡型号选择环境文件：
