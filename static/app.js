@@ -2343,6 +2343,20 @@ function updateStoredPPOCRLineText(line, text) {
     if (Array.isArray(pruned?.rec_texts) && pruned.rec_texts[line.index] !== undefined) {
         pruned.rec_texts[line.index] = text;
     }
+    // Keep the markdown snapshots in sync so MD/JSON exports (and the copy
+    // button) reflect corrections — same joining convention as the backend
+    // (lines joined by \n, pages by \n\n).
+    if (Array.isArray(pageResult.ocrLines)) {
+        pageResult.markdown = pageResult.markdown || { images: {} };
+        pageResult.markdown.text = pageResult.ocrLines
+            .map((entry) => entry?.text)
+            .filter(Boolean)
+            .join('\n');
+    }
+    task.markdown = (task.ocrResults || [])
+        .map((page) => page?.markdown?.text || '')
+        .filter(Boolean)
+        .join('\n\n');
     task.updatedAt = Date.now();
 }
 
