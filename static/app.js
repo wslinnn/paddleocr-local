@@ -150,22 +150,52 @@ function setupEventListeners() {
         els.fileInput.value = '';
     });
 
-    ['dragenter', 'dragover'].forEach((name) => {
-        document.addEventListener(name, (event) => {
-            event.preventDefault();
-            els.dropZone?.classList.add('drag-over');
-        });
+    // Full-screen drop overlay: dragenter fires for every element boundary, so
+    // track depth — the overlay stays up while dragging anywhere in the window
+    // and hides only when the pointer leaves (depth 0) or drops.
+    const dragOverlay = document.createElement('div');
+    dragOverlay.className = 'drop-overlay';
+    dragOverlay.innerHTML = `<div class="drop-overlay-hint">${t('松开以上传文件')}</div>`;
+    document.body.appendChild(dragOverlay);
+    let dragDepth = 0;
+
+    document.addEventListener('dragenter', (event) => {
+        event.preventDefault();
+        dragDepth += 1;
+        dragOverlay.classList.add('active');
+        els.dropZone?.classList.add('drag-over');
     });
 
-    ['dragleave', 'drop'].forEach((name) => {
-        document.addEventListener(name, (event) => {
-            event.preventDefault();
+    document.addEventListener('dragover', (event) => {
+        event.preventDefault();
+    });
+
+    document.addEventListener('dragleave', () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) {
+            dragOverlay.classList.remove('active');
             els.dropZone?.classList.remove('drag-over');
-        });
+        }
     });
 
     document.addEventListener('drop', async (event) => {
+        event.preventDefault();
+        dragDepth = 0;
+        dragOverlay.classList.remove('active');
+        els.dropZone?.classList.remove('drag-over');
         await handleFiles(event.dataTransfer.files);
+    });
+
+    // Paste a screenshot (Ctrl/⌘+V) anywhere — feeds clipboard images into the
+    // same task pipeline as file drops. Text paste is left untouched.
+    document.addEventListener('paste', async (event) => {
+        const images = Array.from(event.clipboardData?.items || [])
+            .filter((item) => item.type.startsWith('image/'))
+            .map((item) => item.getAsFile())
+            .filter(Boolean);
+        if (images.length === 0) return;
+        event.preventDefault();
+        await handleFiles(images);
     });
 
     els.sidebarToggle.addEventListener('click', () => {
