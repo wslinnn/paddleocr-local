@@ -3193,23 +3193,77 @@ async function copyActiveResult() {
     }
 }
 
-async function downloadActiveTask() {
+function downloadActiveTask() {
     const task = getActiveTask();
     if (!task?.markdown && !task?.ocrResults?.length) return;
+    showDownloadFormatMenu(task, els.downloadBtn);
+}
 
-    if (activeResultView === 'json') {
-        const json = JSON.stringify(toOfficialJson(task), null, 2);
-        downloadBlob(new Blob([json], { type: 'application/json' }), safeDownloadName(task.name, 'json'));
+function showDownloadFormatMenu(task, anchor) {
+    document.querySelector('.download-format-menu')?.remove();
+    const menu = document.createElement('div');
+    menu.className = 'download-format-menu';
+    const options = [];
+    if (Array.isArray(task.ocrResults) && task.ocrResults.length) {
+        options.push({ label: 'PDF（重排）', action: () => downloadTaskPdf(task) });
+        options.push({ label: 'TXT（纯文本）', action: () => downloadTaskText(task) });
+    }
+    options.push({ label: 'JSON', action: () => downloadTaskJson(task) });
+    const hasMarkdown = Boolean(visibleTaskMarkdown(task));
+    if (hasMarkdown) {
+        const imageEntries = Object.entries(task.images || {});
+        options.push({
+            label: imageEntries.length ? 'ZIP（Markdown + 图片）' : 'Markdown',
+            action: () => downloadTaskMarkdown(task),
+        });
+    }
+    for (const opt of options) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'download-format-item';
+        btn.textContent = opt.label;
+        btn.addEventListener('click', () => { opt.action(); menu.remove(); });
+        menu.appendChild(btn);
+    }
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = `${rect.bottom + 6}px`;
+    menu.style.right = `${window.innerWidth - rect.right}px`;
+    document.body.appendChild(menu);
+    setTimeout(() => {
+        const close = (e) => { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', close); } };
+        document.addEventListener('mousedown', close);
+    }, 0);
+}
+
+function downloadTaskJson(task) {
+    const json = JSON.stringify(toOfficialJson(task), null, 2);
+    downloadBlob(new Blob([json], { type: 'application/json' }), safeDownloadName(task.name, 'json'));
+}
+
+async function downloadTaskPdf(task) {
+    if (!task?.id) return;
+    const response = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/export?format=pdf`);
+    if (!response.ok) {
+        alert(`PDF 导出失败 (${response.status})`);
         return;
     }
+    const blob = await response.blob();
+    downloadBlob(blob, safeDownloadName(task.name, 'pdf'));
+}
 
+function downloadTaskText(task) {
+    const text = ocrResultsAsText(task);
+    downloadBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), safeDownloadName(task.name, 'txt'));
+}
+
+async function downloadTaskMarkdown(task) {
     const markdown = normalizeOCRMarkdown(visibleTaskMarkdown(task));
     const imageEntries = Object.entries(task.images || {});
     if (imageEntries.length === 0) {
         downloadBlob(new Blob([markdown], { type: 'text/markdown' }), safeDownloadName(task.name, 'md'));
         return;
     }
-
     const zip = new JSZip();
     let rewritten = markdown;
     const folder = zip.folder('ocr_images');
@@ -3221,6 +3275,20 @@ async function downloadActiveTask() {
     zip.file('README.md', rewritten);
     const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     downloadBlob(blob, safeDownloadName(task.name, 'zip'));
+}
+
+function ocrResultsAsText(task) {
+    const results = Array.isArray(task?.ocrResults) ? task.ocrResults : [];
+    return results.map((page) => {
+        let lines;
+        if (Array.isArray(page?.ocrLines)) {
+            lines = page.ocrLines.map((l) => l?.text).filter(Boolean);
+        } else {
+            const pruned = page?.prunedResult || page || {};
+            lines = Array.isArray(pruned.rec_texts) ? pruned.rec_texts : [];
+        }
+        return lines.join('\n');
+    }).filter(Boolean).join('\n\n');
 }
 
 async function clearHistory() {
