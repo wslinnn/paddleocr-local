@@ -54,7 +54,7 @@ def image_to_data_url(image: Image.Image) -> str:
     t1 = time.perf_counter()
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     t2 = time.perf_counter()
-    logger.info("[timing] image_to_data_url: jpeg_save %.3fs | base64 %.3fs | jpeg_size=%dKB",
+    logger.debug("[timing] image_to_data_url: jpeg_save %.3fs | base64 %.3fs | jpeg_size=%dKB",
                 t1 - t0, t2 - t1, len(buffer.getvalue()) // 1024)
     return f"data:image/jpeg;base64,{encoded}"
 
@@ -208,7 +208,7 @@ def run_one(engine, image: Image.Image):
             txts.append(line[1])
             scores.append(line[2])
     t3 = time.perf_counter()
-    logger.info("[timing] run_one: np.array %.3fs | engine(infer) %.3fs | parse %.3fs | lines=%d",
+    logger.debug("[timing] run_one: np.array %.3fs | engine(infer) %.3fs | parse %.3fs | lines=%d",
                 t1 - t0, t2 - t1, t3 - t2, len(txts) if txts else 0)
     return txts, scores, boxes
 
@@ -251,7 +251,7 @@ async def ocr(request: Request):
     t_prep = time.perf_counter()
     engine = await get_engine()
     t_engine = time.perf_counter()
-    logger.info("[timing] request: read_input %.3fs | prepare_images(%d pages) %.3fs | get_engine %.3fs",
+    logger.debug("[timing] request: read_input %.3fs | prepare_images(%d pages) %.3fs | get_engine %.3fs",
                 t_input - t_start, len(pages), t_prep - t_input, t_engine - t_prep)
     pages_result = []
     async with INFERENCE_LOCK:
@@ -263,7 +263,7 @@ async def ocr(request: Request):
             t_enc = time.perf_counter()
             pages_result.append(to_ppocr_page(txts, scores, boxes, page_index=index, input_image_b64=img_b64))
             t_done = time.perf_counter()
-            logger.info("[timing] page %d/%d: run_one %.3fs | image_to_data_url %.3fs | to_ppocr %.3fs | page_total %.3fs",
+            logger.debug("[timing] page %d/%d: run_one %.3fs | image_to_data_url %.3fs | to_ppocr %.3fs | page_total %.3fs",
                         index + 1, len(pages), t_run - t_page, t_enc - t_run, t_done - t_enc, t_done - t_page)
     t_infer = time.perf_counter()
     result = build_response(pages_result, resolved_type)
