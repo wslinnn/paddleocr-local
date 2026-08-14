@@ -124,6 +124,7 @@ const els = {
     ignoreFooterSwitch: document.getElementById('ignore-footer-switch'),
     ignoreNumberSwitch: document.getElementById('ignore-number-switch'),
     pdfBatchSizeInput: document.getElementById('pdf-batch-size-input'),
+    pdfPageRangeInput: document.getElementById('pdf-page-range-input'),
     taskTemplate: document.getElementById('task-item-template')
 };
 
@@ -1356,7 +1357,8 @@ async function createPdfTask(fileOrBlob, name, extra = {}) {
     const pageCount = pdf.numPages;
     const thumbnail = await renderPDFPageDataUrl(pdf, 1, 0.35);
     const pdfBatchSize = getConfiguredPdfBatchSize();
-    const batches = createPdfBatchDescriptors(pageCount, pdfBatchSize);
+    const selectedPages = parsePdfPageRange(els.pdfPageRangeInput?.value, pageCount);
+    const batches = createPdfBatchDescriptors(pageCount, pdfBatchSize, '', selectedPages);
 
     const now = Date.now();
     const task = {
@@ -2911,8 +2913,9 @@ function shouldRebuildPdfBatchPlan(task) {
 function rebuildPdfBatchPlan(task) {
     const pageCount = Number(task.pageCount || 1);
     const batchSize = getConfiguredPdfBatchSize();
+    const selectedPages = parsePdfPageRange(els.pdfPageRangeInput?.value, pageCount);
     task.pdfBatchSize = batchSize;
-    task.batches = createPdfBatchDescriptors(pageCount, batchSize, task.sourceDataUrl);
+    task.batches = createPdfBatchDescriptors(pageCount, batchSize, task.sourceDataUrl, selectedPages);
     task.markdown = '';
     task.images = {};
     task.ocrResults = [];
@@ -3240,23 +3243,66 @@ function parseStreamingOCREvent(line) {
     }
 }
 
-function createPdfBatchDescriptors(pageCount, pdfBatchSize, sourceDataUrl = '') {
-    const batches = [];
-    for (let startPage = 1; startPage <= pageCount; startPage += pdfBatchSize) {
-        const endPage = Math.min(startPage + pdfBatchSize - 1, pageCount);
-        const batch = {
-            id: createId(),
-            label: formatPageLabel(startPage, endPage),
-            fileType: 0,
-            startPage,
-            endPage,
-            pageCount: endPage - startPage + 1,
-            status: 'pending'
-        };
-        if (pageCount === 1 && sourceDataUrl) {
-            batch.payloadDataUrl = sourceDataUrl;
+function parsePdfPageRange(raw, pageCount) {
+    const text = String(raw || '').trim();
+    if (!text) return null;
+    const selected = new Set();
+    for (const token of text.split(',')) {
+        const match = token.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+        if (!match) {
+            throw new Error(t('页码范围格式无效：{token}', { token: token.trim() }));
         }
-        batches.push(batch);
+        const start = Number(match[1]);
+        const end = match[2] ? Number(match[2]) : start;
+        if (end < start) {
+            throw new Error(t('页码范围无效：{token}（起始页大于结束页）', { token: token.trim() }));
+        }
+        for (let page = start; page <= end; page += 1) {
+            if (page >= 1 && page <= pageCount) selected.add(page);
+        }
+    }
+    if (selected.size === 0) {
+        throw new Error(t('页码范围超出文档范围（共 {count} 页）', { count: pageCount }));
+    }
+    return [...selected].sort((a, b) => a - b);
+}
+
+function createPdfBatchDescriptors(pageCount, pdfBatchSize, sourceDataUrl = '', selectedPages = null) {
+    // With a page range, group the selected pages into consecutive runs and
+    // chunk each run by the batch size; batches stay contiguous so the
+    // existing per-batch PDF slicing keeps working unchanged.
+    const runs = [];
+    if (selectedPages) {
+        for (const page of selectedPages) {
+            const last = runs[runs.length - 1];
+            if (last && page === last.end + 1) {
+                last.end = page;
+            } else {
+                runs.push({ start: page, end: page });
+            }
+        }
+    } else {
+        runs.push({ start: 1, end: pageCount });
+    }
+
+    const batches = [];
+    for (const run of runs) {
+        for (let startPage = run.start; startPage <= run.end; startPage += pdfBatchSize) {
+            const endPage = Math.min(startPage + pdfBatchSize - 1, run.end);
+            const batch = {
+                id: createId(),
+                label: formatPageLabel(startPage, endPage),
+                fileType: 0,
+                startPage,
+                endPage,
+                pageCount: endPage - startPage + 1,
+                status: 'pending'
+            };
+            if (pageCount === 1 && sourceDataUrl) {
+                batch.payloadDataUrl = sourceDataUrl;
+            }
+            batches.push(batch);
+        }
     }
     return batches;
 }
