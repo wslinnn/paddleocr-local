@@ -15,9 +15,18 @@ logging.basicConfig(level=os.getenv("RAPIDOCR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger("rapidocr-adapter")
 
 MODEL_TIER = os.getenv("RAPIDOCR_MODEL_TIER", "small").strip().lower()
-MODEL_NAME = os.getenv("RAPIDOCR_MODEL_NAME", "PP-OCRv6_medium_rapid")
+MODEL_NAME = os.getenv("RAPIDOCR_MODEL_NAME", f"PP-OCRv6_{MODEL_TIER}_rapid")
 PDF_DPI = int(os.getenv("RAPIDOCR_PDF_DPI", "200"))
 MAX_PAGES = int(os.getenv("RAPIDOCR_MAX_PAGES_PER_REQUEST", "50"))
+# Inference engine: onnxruntime (default, broad compat) or openvino (Intel CPU,
+# faster for PP-OCRv6's RepLKFPN + Light-SVTR). AMD CPUs should stay on ort.
+ENGINE_TYPE = os.getenv("RAPIDOCR_ENGINE_TYPE", "onnxruntime").strip().lower()
+# Intra-op threads. Empty = use all logical cores; on HT CPUs prefer physical
+# core count (e.g. os.cpu_count()//2) for better throughput.
+_threads_env = os.getenv("RAPIDOCR_NUM_THREADS", "").strip()
+NUM_THREADS = int(_threads_env) if _threads_env else (os.cpu_count() or 0)
+# Recognition batch size; smaller lowers single-image latency on CPU.
+REC_BATCH_NUM = int(os.getenv("RAPIDOCR_REC_BATCH_NUM", "3"))
 
 ENGINE = None
 ENGINE_ERROR: str | None = None
@@ -79,24 +88,34 @@ def build_response(pages_result: list[dict], file_type: int) -> dict[str, Any]:
 
 
 def create_engine():
-    """Load the RapidOCR engine configured for PP-OCRv6 at the requested tier.
+    """Load the RapidOCR engine.
 
-    RapidOCR() defaults to PP-OCRv6 small; to honor RAPIDOCR_MODEL_TIER we pass
-    explicit model_type via params. Models live in the image (pre-downloaded at
-    build time, see Dockerfile.rapidocr); a non-default tier downloads lazily
-    to the same default location on first use.
+    Engine, tier, thread count and rec batch are env-configurable so the same
+    image runs on Intel (openvino) or AMD (onnxruntime) without code changes.
+    Models download lazily to the RapidOCR default location on first use.
     """
-    from rapidocr import ModelType, RapidOCR
+    from rapidocr import EngineType, ModelType, RapidOCR
 
+    engine_map = {"onnxruntime": EngineType.ONNXRUNTIME, "openvino": EngineType.OPENVINO}
+    engine_type = engine_map.get(ENGINE_TYPE, EngineType.ONNXRUNTIME)
     tier_map = {"tiny": ModelType.TINY, "small": ModelType.SMALL, "medium": ModelType.MEDIUM}
     model_type = tier_map.get(MODEL_TIER, ModelType.SMALL)
-    logger.info("Loading RapidOCR (PP-OCRv6, tier=%s)", MODEL_TIER)
-    return RapidOCR(
-        params={
-            "Det.model_type": model_type,
-            "Rec.model_type": model_type,
-        }
-    )
+    params = {
+        "Det.engine_type": engine_type,
+        "Det.model_type": model_type,
+        "Rec.engine_type": engine_type,
+        "Rec.model_type": model_type,
+        "Rec.rec_batch_num": REC_BATCH_NUM,
+    }
+    if NUM_THREADS > 0:
+        if ENGINE_TYPE == "openvino":
+            params["EngineConfig.openvino.num_threads"] = NUM_THREADS
+        else:
+            params["EngineConfig.onnxruntime.intra_op_num_threads"] = NUM_THREADS
+            params["EngineConfig.onnxruntime.inter_op_num_threads"] = 1
+    logger.info("Loading RapidOCR (PP-OCRv6, tier=%s, engine=%s, threads=%d, rec_batch=%d)",
+                MODEL_TIER, ENGINE_TYPE, NUM_THREADS, REC_BATCH_NUM)
+    return RapidOCR(params=params)
 
 
 async def get_engine():
