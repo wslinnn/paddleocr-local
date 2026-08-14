@@ -1938,8 +1938,57 @@ function renderPPOCRVisualResult(task, markdownKey, scrollState = null) {
         const pageIndex = startIndex + offset;
         flow.appendChild(createPPOCRVisualPage(page, pageIndex, expectedKeys[pageIndex]));
     });
+    updatePPOCRStatsBar(flow, pages);
     renderedMarkdownKey = markdownKey;
     restoreResultScrollState(visualScrollState);
+}
+
+function updatePPOCRStatsBar(flow, pages) {
+    let bar = flow.querySelector(':scope > .ocr-stats-bar');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.className = 'ocr-stats-bar';
+        flow.prepend(bar);
+    }
+
+    let lineCount = 0;
+    let charCount = 0;
+    let scoreSum = 0;
+    let scoreCount = 0;
+    let lowConfidence = 0;
+    pages.forEach((page) => {
+        page.lines.forEach((line) => {
+            lineCount += 1;
+            charCount += line.text.length;
+            if (Number.isFinite(line.score)) {
+                scoreSum += line.score;
+                scoreCount += 1;
+                if (line.score < PPOCR_LOW_CONFIDENCE_THRESHOLD) lowConfidence += 1;
+            }
+        });
+    });
+
+    const items = [
+        `${pages.length} ${t('页')}`,
+        `${lineCount} ${t('行')}`,
+        `${charCount} ${t('字符')}`,
+    ];
+    if (scoreCount > 0) {
+        items.push(`${t('平均置信度')} ${((scoreSum / scoreCount) * 100).toFixed(0)}%`);
+    }
+    bar.replaceChildren();
+    items.forEach((text) => {
+        const span = document.createElement('span');
+        span.className = 'ocr-stats-item';
+        span.textContent = text;
+        bar.appendChild(span);
+    });
+    if (lowConfidence > 0) {
+        const span = document.createElement('span');
+        span.className = 'ocr-stats-item ocr-stats-warn';
+        span.textContent = `${t('低置信度')} ${lowConfidence} ${t('行')}`;
+        bar.appendChild(span);
+    }
 }
 
 function freezeVisualScrollState(scrollState) {
