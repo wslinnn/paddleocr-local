@@ -389,6 +389,14 @@ svg {
     accent-color: var(--brand);
 }
 
+.settings-grid input:disabled {
+    cursor: not-allowed;
+}
+
+.settings-grid label:has(input:disabled) {
+    opacity: 0.45;
+}
+
 .setting-number {
     justify-content: space-between;
 }

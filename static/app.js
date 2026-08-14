@@ -547,6 +547,20 @@ function normalizeModelList(data) {
     });
 }
 
+function updateParseSettingsAvailability() {
+    // pp-ocrv6-rapid (RapidOCR) is plain text OCR: these layout/quality switches
+    // are silently ignored by the adapter, so disable them to avoid misleading users.
+    const rapid = selectedModelId === 'pp-ocrv6-rapid';
+    const unsupported = [
+        els.chartRecognitionSwitch, els.docUnwarpingSwitch, els.docOrientationSwitch,
+        els.sealRecognitionSwitch, els.formulaNumberSwitch,
+        els.ignoreHeaderSwitch, els.ignoreFooterSwitch, els.ignoreNumberSwitch,
+    ];
+    for (const sw of unsupported) {
+        if (sw) sw.disabled = rapid;
+    }
+}
+
 function renderModelSelect() {
     if (!els.modelSelect) return;
     els.modelSelect.innerHTML = '';
@@ -558,6 +572,7 @@ function renderModelSelect() {
         els.modelSelect.appendChild(option);
     });
     renderUnlimitedOcrBackendSelect();
+    updateParseSettingsAvailability();
 }
 
 function normalizeUnlimitedOcrBackend(value) {
