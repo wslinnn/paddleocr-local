@@ -16,6 +16,7 @@ const DEFAULT_MODEL_ID = 'paddleocr-vl-1.6';
 // OCR lines below this recognition score get an amber marker in the visual view.
 const PPOCR_LOW_CONFIDENCE_THRESHOLD = 0.6;
 const DEFAULT_PDF_ZOOM = 1;
+const MIN_PDF_ZOOM = 0.55;
 const PDF_DEFAULT_PAGE_WIDTH = 595;
 const PDF_FIT_WIDTH_GUTTER = 12;
 const MAX_DEFAULT_PDF_ZOOM = 1.3;
@@ -1717,6 +1718,12 @@ async function renderSource(task) {
         wrap.appendChild(imageBox);
         els.sourceViewer.appendChild(wrap);
         await waitForImageReady(img);
+        pdfDefaultPageWidth = img.naturalWidth || PDF_DEFAULT_PAGE_WIDTH;
+        currentZoom = getDefaultPdfZoom();
+        applySourceImageZoom(img);
+        currentPage = 1;
+        els.pdfControls.classList.remove('hidden');
+        updatePdfControls();
         return;
     }
 
@@ -2585,11 +2592,25 @@ function layoutPPOCRTextLayer(stage, page, width, height, toolbar, imageElement 
 function getSourcePageDisplaySize(pageNumber) {
     const pageWrap = els.sourceViewer.querySelector(`.pdf-page-wrap[data-page="${pageNumber}"]`);
     const canvas = pageWrap?.querySelector('canvas');
-    if (!canvas) return null;
-    return {
-        width: canvas.clientWidth || canvas.width,
-        height: canvas.clientHeight || canvas.height
-    };
+    if (canvas) {
+        // Inline style.width is the CSS size (the bitmap is device-resolution,
+        // so canvas.width as a fallback would double the size on HiDPI).
+        const width = canvas.clientWidth
+            || Number.parseFloat(canvas.style.width)
+            || canvas.width;
+        const height = canvas.clientHeight
+            || Number.parseFloat(canvas.style.height)
+            || canvas.height;
+        return { width, height };
+    }
+    const image = els.sourceViewer.querySelector(`.source-image-wrap[data-page="${pageNumber}"] img`);
+    if (image) {
+        return {
+            width: image.clientWidth || image.naturalWidth,
+            height: image.clientHeight || image.naturalHeight
+        };
+    }
+    return null;
 }
 
 function hydratePPOCRLineGeometry(line, page, bounds) {
@@ -3809,12 +3830,26 @@ function changePdfPage(delta) {
     updatePdfControls();
 }
 
+function applySourceImageZoom(img) {
+    const naturalWidth = img.naturalWidth || pdfDefaultPageWidth || PDF_DEFAULT_PAGE_WIDTH;
+    img.style.width = `${Math.max(1, Math.round(naturalWidth * currentZoom))}px`;
+    img.style.height = 'auto';
+}
+
+function currentSourceImage() {
+    return els.sourceViewer.querySelector('.source-image-wrap img');
+}
+
 async function changeZoom(delta) {
-    if (!currentPdf) return;
-    const scrollAnchor = captureSourceScrollAnchor();
-    currentZoom = Math.min(2.2, Math.max(0.55, currentZoom + delta));
-    await renderPdfDocument(++sourceRenderToken, scrollAnchor);
     const task = getActiveTask();
+    if (!currentPdf && task?.sourceKind !== 'image') return;
+    const scrollAnchor = currentPdf ? captureSourceScrollAnchor() : null;
+    currentZoom = Math.min(2.2, Math.max(MIN_PDF_ZOOM, currentZoom + delta));
+    if (currentPdf) {
+        await renderPdfDocument(++sourceRenderToken, scrollAnchor);
+    } else {
+        applySourceImageZoom(currentSourceImage());
+    }
     if (task && activeResultView === 'markdown') {
         if (isPPOCRVisualTask(task)) {
             invalidatePPOCRVisualRender();
@@ -3825,11 +3860,15 @@ async function changeZoom(delta) {
 }
 
 async function resetZoom() {
-    if (!currentPdf) return;
-    const scrollAnchor = resetAnchorHorizontal(captureSourceScrollAnchor());
-    currentZoom = getDefaultPdfZoom();
-    await renderPdfDocument(++sourceRenderToken, scrollAnchor);
     const task = getActiveTask();
+    if (!currentPdf && task?.sourceKind !== 'image') return;
+    const scrollAnchor = currentPdf ? resetAnchorHorizontal(captureSourceScrollAnchor()) : null;
+    currentZoom = getDefaultPdfZoom();
+    if (currentPdf) {
+        await renderPdfDocument(++sourceRenderToken, scrollAnchor);
+    } else {
+        applySourceImageZoom(currentSourceImage());
+    }
     if (task && activeResultView === 'markdown') {
         if (isPPOCRVisualTask(task)) {
             invalidatePPOCRVisualRender();
@@ -3878,7 +3917,16 @@ function updateCurrentPageFromScroll() {
 }
 
 function updatePdfControls() {
-    if (!currentPdf) return;
+    if (!currentPdf) {
+        // Image sources share the zoom controls; paging is not applicable.
+        els.pageIndicator.textContent = '1 / 1';
+        els.prevPageBtn.disabled = true;
+        els.nextPageBtn.disabled = true;
+        if (els.resetZoomBtn) {
+            els.resetZoomBtn.disabled = Math.abs(currentZoom - getDefaultPdfZoom()) < 0.01;
+        }
+        return;
+    }
     els.pageIndicator.textContent = `${currentPage} / ${currentPdf.numPages}`;
     els.prevPageBtn.disabled = currentPage <= 1;
     els.nextPageBtn.disabled = currentPage >= currentPdf.numPages;
@@ -3896,7 +3944,8 @@ function getDefaultPdfZoom() {
     const availableWidth = Math.max(0, viewer.clientWidth - horizontalPadding - PDF_FIT_WIDTH_GUTTER);
     if (!availableWidth || !pdfDefaultPageWidth) return DEFAULT_PDF_ZOOM;
     const fitZoom = availableWidth / pdfDefaultPageWidth;
-    return roundPdfZoom(Math.max(DEFAULT_PDF_ZOOM, Math.min(MAX_DEFAULT_PDF_ZOOM, fitZoom)));
+    // Fit can go below 1 (wide pages/large images shrink to the pane width).
+    return roundPdfZoom(Math.max(MIN_PDF_ZOOM, Math.min(MAX_DEFAULT_PDF_ZOOM, fitZoom)));
 }
 
 function roundPdfZoom(value) {
@@ -4826,6 +4875,8 @@ function showStreamingSourceHighlight(position) {
     surface.layer.appendChild(box);
 }
 
+let hoverFollowTimer = 0;
+
 function showPPOCRSourceHighlight(line) {
     if (!line?.box || !line.pageWidth || !line.pageHeight) return;
     clearSourceHighlight();
@@ -4841,15 +4892,19 @@ function showPPOCRSourceHighlight(line) {
     }, surface.element);
     surface.layer.appendChild(box);
 
-    // Hover-follow: bring the highlighted region into view on the left when
-    // the user points at a line on the right. No-op when already visible.
-    const page = els.sourceViewer.querySelector(`.pdf-page-wrap[data-page="${line.sourcePage}"]`);
-    if (page && !isElementMostlyVisible(page, els.sourceViewer)) {
-        scrollPdfPageIntoView(line.sourcePage, 'smooth');
-    }
-    if (!isElementMostlyVisible(box, els.sourceViewer)) {
-        box.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    }
+    // Hover-follow: scroll the left pane to the page after a short dwell, so
+    // sweeping across lines doesn't trigger competing smooth scrolls (the
+    // jumpiness came from per-box centering). Page-level only, and a no-op
+    // when the page is already in view.
+    window.clearTimeout(hoverFollowTimer);
+    hoverFollowTimer = window.setTimeout(() => {
+        const page = els.sourceViewer.querySelector(
+            `.pdf-page-wrap[data-page="${line.sourcePage}"], .source-image-wrap[data-page="${line.sourcePage}"]`
+        );
+        if (page && !isElementMostlyVisible(page, els.sourceViewer)) {
+            scrollPdfPageIntoView(line.sourcePage, 'smooth');
+        }
+    }, 250);
 }
 
 function clearSourceHighlight() {
