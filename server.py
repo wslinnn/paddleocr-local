@@ -1757,6 +1757,27 @@ async def get_task(task_id: str):
     return task
 
 
+NOTO_CJK_FONT_CANDIDATES = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
+)
+
+
+def find_cjk_font() -> str | None:
+    """Locate an installed Noto CJK font for embedding.
+
+    Noto Sans CJK is pan-CJK: every index contains Simplified Chinese glyphs,
+    so the collection's first face renders SC correctly. Embedding it makes the
+    PDF self-contained (any viewer renders identically) instead of relying on
+    the viewer's local CJK fonts like the non-embedded 'china-s' does.
+    """
+    for path in NOTO_CJK_FONT_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def export_page_size(page: dict, boxes: list) -> tuple[int, int]:
     """Page pixel dimensions for the reflowed PDF.
 
@@ -1784,6 +1805,7 @@ def build_relaid_pdf(ocr_results: list) -> bytes:
     """
     import fitz
 
+    font_path = find_cjk_font()
     doc = fitz.open()
     for page in ocr_results:
         page_dict = page if isinstance(page, dict) else {}
@@ -1802,14 +1824,24 @@ def build_relaid_pdf(ocr_results: list) -> bytes:
             if x2 <= x1 or y2 <= y1:
                 continue
             rect = fitz.Rect(x1, y1, x2, y2)
-            fontsize = max(6.0, (y2 - y1) * 0.8)
+            text_kwargs = {"fontsize": max(6.0, (y2 - y1) * 0.8), "align": 0}
+            if font_path:
+                text_kwargs["fontname"] = "noto"
+                text_kwargs["fontfile"] = font_path
+            else:
+                text_kwargs["fontname"] = "china-s"
             for _ in range(6):
-                rc = pdf_page.insert_textbox(rect, str(text), fontname="china-s", fontsize=fontsize, align=0)
+                rc = pdf_page.insert_textbox(rect, str(text), **text_kwargs)
                 if rc >= 0:
                     break
-                fontsize *= 0.8
-                if fontsize < 4:
+                text_kwargs["fontsize"] *= 0.8
+                if text_kwargs["fontsize"] < 4:
                     break
+    if font_path:
+        try:
+            doc.subset_fonts()
+        except Exception:
+            logger.warning("subset_fonts failed; PDF will embed the full font")
     buffer = io.BytesIO()
     doc.save(buffer)
     doc.close()
