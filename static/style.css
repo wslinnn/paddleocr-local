@@ -307,6 +307,7 @@ svg {
 .secondary-button {
     height: 32px;
     padding: 0 12px;
+    white-space: nowrap;
     border-radius: 6px;
     color: var(--brand);
     background: var(--brand-soft);
@@ -653,6 +654,9 @@ svg {
     color: var(--brand);
     font-size: 12px;
     margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .pane-header h2 {
@@ -706,6 +710,7 @@ svg {
 
 .result-heading {
     min-width: 0;
+    overflow: hidden;
 }
 
 .result-header .pane-kicker {
@@ -716,12 +721,16 @@ svg {
 .result-header h2 {
     font-size: 14px;
     line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .result-actions {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-shrink: 0;
 }
 
 .download-format-menu {

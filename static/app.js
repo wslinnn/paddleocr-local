@@ -2738,10 +2738,13 @@ function roundPPOCRScale(value) {
 }
 
 function bindPPOCRLineEvents(element, toolbar, line) {
+    // Hover = transient highlight only. Navigation is committed on click or
+    // keyboard focus — that's when the left pane follows (see followSourceHighlight).
     const activate = () => activatePPOCRLine(element, toolbar, line);
+    const activateAndFollow = () => activatePPOCRLine(element, toolbar, line, { scrollSource: true });
     element.addEventListener('mouseenter', activate);
-    element.addEventListener('focus', activate);
-    element.addEventListener('click', activate);
+    element.addEventListener('focus', activateAndFollow);
+    element.addEventListener('click', activateAndFollow);
     element.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') {
             event.preventDefault();
@@ -2801,10 +2804,7 @@ function activatePPOCRLine(element, toolbar, line, { scrollSource = false } = {}
     toolbar.classList.remove('hidden');
     showPPOCRSourceHighlight(line);
     if (scrollSource) {
-        const page = els.sourceViewer.querySelector(`.pdf-page-wrap[data-page="${line.sourcePage}"]`);
-        if (page && !isElementMostlyVisible(page, els.sourceViewer)) {
-            scrollPdfPageIntoView(line.sourcePage, 'smooth');
-        }
+        followSourceHighlightIntoView();
     }
 
     const stageRect = stage.getBoundingClientRect();
@@ -4875,8 +4875,6 @@ function showStreamingSourceHighlight(position) {
     surface.layer.appendChild(box);
 }
 
-let hoverFollowTimer = 0;
-
 function showPPOCRSourceHighlight(line) {
     if (!line?.box || !line.pageWidth || !line.pageHeight) return;
     clearSourceHighlight();
@@ -4891,20 +4889,17 @@ function showPPOCRSourceHighlight(line) {
         pageHeight: line.pageHeight
     }, surface.element);
     surface.layer.appendChild(box);
+}
 
-    // Hover-follow: scroll the left pane to the page after a short dwell, so
-    // sweeping across lines doesn't trigger competing smooth scrolls (the
-    // jumpiness came from per-box centering). Page-level only, and a no-op
-    // when the page is already in view.
-    window.clearTimeout(hoverFollowTimer);
-    hoverFollowTimer = window.setTimeout(() => {
-        const page = els.sourceViewer.querySelector(
-            `.pdf-page-wrap[data-page="${line.sourcePage}"], .source-image-wrap[data-page="${line.sourcePage}"]`
-        );
-        if (page && !isElementMostlyVisible(page, els.sourceViewer)) {
-            scrollPdfPageIntoView(line.sourcePage, 'smooth');
-        }
-    }, 250);
+function followSourceHighlightIntoView() {
+    const box = els.sourceViewer.querySelector('.source-highlight-box-ocr');
+    if (!box) return;
+    const boxRect = box.getBoundingClientRect();
+    const viewerRect = els.sourceViewer.getBoundingClientRect();
+    const fullyVisible = boxRect.top >= viewerRect.top && boxRect.bottom <= viewerRect.bottom;
+    if (!fullyVisible) {
+        scrollElementIntoContainer(box, els.sourceViewer, 'smooth');
+    }
 }
 
 function clearSourceHighlight() {
