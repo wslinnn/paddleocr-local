@@ -191,7 +191,9 @@ svg {
 }
 
 .model-pill {
-    min-width: 220px;
+    min-width: 0;
+    max-width: 300px;
+    overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -612,6 +614,7 @@ svg {
 }
 
 .document-workbench {
+    position: relative;
     width: 100%;
     min-width: 0;
     min-height: 0;
@@ -850,8 +853,9 @@ svg {
 }
 
 .pdf-page-wrap canvas {
-    max-width: 100%;
-    height: auto;
+    /* Inline width/height pin the CSS size (the bitmap is device-resolution);
+       don't cap it here or the aspect ratio distorts when zoomed in. */
+    max-width: none;
 }
 
 .pdf-highlight-layer {
@@ -917,15 +921,18 @@ svg {
 }
 
 .pdf-controls {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
     width: max-content;
     height: 46px;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 4px;
-    margin: -54px auto 8px;
     padding: 0 12px;
-    z-index: 3;
+    z-index: 6;
     pointer-events: auto;
     border: 1px solid rgba(226, 232, 240, .9);
     border-radius: 999px;
@@ -1729,4 +1736,32 @@ svg {
 .pdf-parse-batch span {
     font-size: 13px;
     color: var(--muted);
+}
+
+.model-pill #model-status-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pdf-parse-start {
+    height: 34px;
+    padding: 0 18px;
+    border: 0;
+    border-radius: 6px;
+    background: var(--brand);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.pdf-parse-start:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.pdf-parse-foot .secondary-button {
+    white-space: nowrap;
+    flex-shrink: 0;
 }

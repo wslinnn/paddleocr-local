@@ -1378,7 +1378,7 @@ function confirmPdfParseOptions(fileOrBlob) {
                         <input type="number" min="1" max="400" step="1" inputmode="numeric">
                     </label>
                     <button type="button" class="secondary-button" data-action="cancel">${escapeHtml(t('取消'))}</button>
-                    <button type="button" class="new-task-button" data-action="start" disabled>${escapeHtml(t('开始解析'))}</button>
+                    <button type="button" class="pdf-parse-start" data-action="start" disabled>${escapeHtml(t('开始解析'))}</button>
                 </div>
             </div>
         `;
@@ -1749,10 +1749,16 @@ async function renderPdfDocument(renderToken = sourceRenderToken, scrollAnchor =
 
         const page = await currentPdf.getPage(pageNumber);
         const viewport = page.getViewport({ scale: currentZoom });
+        // Render at device resolution and pin the CSS size — otherwise HiDPI
+        // screens stretch a 1x bitmap to 2x density and pages look blurry.
+        const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+        const renderViewport = page.getViewport({ scale: currentZoom * pixelRatio });
         const canvas = document.createElement('canvas');
         const context = canvas.getContext('2d');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
+        canvas.width = Math.ceil(renderViewport.width);
+        canvas.height = Math.ceil(renderViewport.height);
+        canvas.style.width = `${Math.round(viewport.width)}px`;
+        canvas.style.height = `${Math.round(viewport.height)}px`;
 
         const wrap = document.createElement('div');
         wrap.className = 'pdf-page-wrap';
@@ -1766,7 +1772,7 @@ async function renderPdfDocument(renderToken = sourceRenderToken, scrollAnchor =
         wrap.appendChild(canvasBox);
         flow.appendChild(wrap);
 
-        await page.render({ canvasContext: context, viewport }).promise;
+        await page.render({ canvasContext: context, viewport: renderViewport }).promise;
     }
 
     if (scrollAnchor) {
@@ -4834,6 +4840,16 @@ function showPPOCRSourceHighlight(line) {
         pageHeight: line.pageHeight
     }, surface.element);
     surface.layer.appendChild(box);
+
+    // Hover-follow: bring the highlighted region into view on the left when
+    // the user points at a line on the right. No-op when already visible.
+    const page = els.sourceViewer.querySelector(`.pdf-page-wrap[data-page="${line.sourcePage}"]`);
+    if (page && !isElementMostlyVisible(page, els.sourceViewer)) {
+        scrollPdfPageIntoView(line.sourcePage, 'smooth');
+    }
+    if (!isElementMostlyVisible(box, els.sourceViewer)) {
+        box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
 }
 
 function clearSourceHighlight() {
@@ -5036,7 +5052,7 @@ function compactOCRJsonResult(pageResult, batchOrId, pageIndex = 0) {
     const batch = typeof batchOrId === 'object' ? batchOrId : null;
     const batchId = batch?.id || batchOrId;
     const compact = stripLargeOCRFields(pageResult);
-    if (batch && ['pp-ocrv6', 'unlimited-ocr', OVIS_OCR_MODEL_ID].includes(compact?.parser)) {
+    if (batch && ['pp-ocrv6', 'pp-ocrv6-rapid', 'unlimited-ocr', OVIS_OCR_MODEL_ID].includes(compact?.parser)) {
         compact.sourcePage = Number(batch.startPage || 1) + pageIndex;
         compact.batchId = batch.id;
     }
