@@ -129,6 +129,10 @@ MODEL_RUNTIME_STARTUP = os.getenv("PANDOCR_ACTIVE_MODEL_ON_START", "paddleocr-vl
 DOCKER_SOCKET_PATH = os.getenv("PANDOCR_DOCKER_SOCKET", "/var/run/docker.sock")
 MODEL_SWITCH_TIMEOUT = float(os.getenv("PANDOCR_MODEL_SWITCH_TIMEOUT", "1200"))
 API_TOKEN = os.getenv("PANDOCR_API_TOKEN", "").strip()
+# Endpoints that orchestrate Docker (build/deploy/switch containers) are
+# privileged: they always require a valid token, even when PANDOCR_API_TOKEN is
+# empty, so a publicly exposed instance cannot be taken over anonymously.
+PRIVILEGED_API_PREFIXES = ("/api/model-runtime/",)
 ENABLE_API_DOCS = parse_bool_env("PANDOCR_ENABLE_API_DOCS", "0")
 ENFORCE_ORIGIN_CHECK = parse_bool_env("PANDOCR_ENFORCE_ORIGIN_CHECK", "1")
 ENABLE_UNLIMITED_OCR = parse_bool_env("PANDOCR_ENABLE_UNLIMITED_OCR", "0")
@@ -1205,6 +1209,18 @@ async def enforce_request_security(request: Request, call_next):
         return JSONResponse(status_code=403, content={"detail": "Cross-origin API request is not allowed"})
 
     if API_TOKEN and request.url.path.startswith("/api/") and not request_is_authenticated(request):
+        return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token"})
+
+    privileged_write = (
+        request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and any(request.url.path.startswith(prefix) for prefix in PRIVILEGED_API_PREFIXES)
+    )
+    if privileged_write and not (API_TOKEN and request_is_authenticated(request)):
+        if not API_TOKEN:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Model-runtime endpoints require PANDOCR_API_TOKEN to be configured."},
+            )
         return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token"})
 
     if request.method in {"POST", "PUT", "PATCH"} and MAX_REQUEST_BYTES > 0:
@@ -2601,6 +2617,11 @@ async def proxy_unlimited_ocr_stream(request: Request):
 if __name__ == "__main__":
     import uvicorn
 
+    if not API_TOKEN:
+        logger.warning(
+            "PANDOCR_API_TOKEN is not set — model-runtime deploy/switch endpoints are disabled. "
+            "Configure a token before exposing this service publicly."
+        )
     logger.info("Starting server. Target Pipeline: %s", PADDLE_SERVICE_URL)
     # proxy_headers: trust X-Forwarded-Proto/For from reverse proxies (OpenResty/nginx)
     # so origin checks see the real external scheme/host instead of the in-container http.

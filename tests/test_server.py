@@ -143,8 +143,13 @@ class ServerTaskApiTests(unittest.TestCase):
         )
 
     def test_model_runtime_switch_requires_docker_control(self):
-        with patch.object(self.server, "model_control_available", return_value=False):
-            response = self.client.post("/api/model-runtime/switch", json={"modelId": "pp-ocrv6"})
+        with patch.object(self.server, "API_TOKEN", "t"), \
+             patch.object(self.server, "model_control_available", return_value=False):
+            response = self.client.post(
+                "/api/model-runtime/switch",
+                json={"modelId": "pp-ocrv6"},
+                headers={"Authorization": "Bearer t"},
+            )
         self.assertEqual(response.status_code, 503)
 
     def test_dynamic_docker_build_context_uses_project_dockerfiles(self):
@@ -239,11 +244,12 @@ class ServerTaskApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_allowlisted_origin_can_reach_api(self):
-        with patch.object(self.server, "model_control_available", return_value=False):
+        with patch.object(self.server, "API_TOKEN", "t"), \
+             patch.object(self.server, "model_control_available", return_value=False):
             response = self.client.post(
                 "/api/model-runtime/switch",
                 json={"modelId": "pp-ocrv6"},
-                headers={"Origin": "http://localhost:8000"},
+                headers={"Origin": "http://localhost:8000", "Authorization": "Bearer t"},
             )
         self.assertEqual(response.status_code, 503)
 
@@ -611,8 +617,13 @@ class ServerTaskApiTests(unittest.TestCase):
     def test_model_runtime_switch_is_rejected_while_ocr_is_active(self):
         self.server.ocr_active_count = 1
         try:
-            with patch.object(self.server, "model_control_available", return_value=True):
-                response = self.client.post("/api/model-runtime/switch", json={"modelId": "pp-ocrv6"})
+            with patch.object(self.server, "API_TOKEN", "t"), \
+                 patch.object(self.server, "model_control_available", return_value=True):
+                response = self.client.post(
+                    "/api/model-runtime/switch",
+                    json={"modelId": "pp-ocrv6"},
+                    headers={"Authorization": "Bearer t"},
+                )
             self.assertEqual(response.status_code, 409)
         finally:
             self.server.ocr_active_count = 0
@@ -719,6 +730,20 @@ class ServerTaskApiTests(unittest.TestCase):
         page = response.json()["layoutParsingResults"][0]
         self.assertEqual(page["parser"], "pp-ocrv6-rapid")
         self.assertEqual(page["model"], self.server.RAPIDOCR_MODEL_NAME)
+
+    def test_privileged_endpoints_blocked_when_token_empty(self):
+        # API_TOKEN is "" in the test environment (setUpClass).
+        response = self.client.post("/api/model-runtime/switch", json={"modelId": "pp-ocrv6"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_privileged_endpoints_reject_missing_token(self):
+        original = self.server.API_TOKEN
+        self.server.API_TOKEN = "secret"
+        try:
+            response = self.client.post("/api/model-runtime/switch", json={"modelId": "pp-ocrv6"})
+            self.assertEqual(response.status_code, 401)
+        finally:
+            self.server.API_TOKEN = original
 
 
 if __name__ == "__main__":

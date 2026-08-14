@@ -32,7 +32,7 @@ docker compose -f docker-compose.rapidocr.yml up -d --build
 
 ## 反向代理 / HTTPS 部署
 
-**RapidOCR 精简部署（`docker-compose.rapidocr.yml`）默认关闭 origin 校验**（`PANDOCR_ENFORCE_ORIGIN_CHECK=0`）：任意域名 / 端口 / 协议 / 反向代理零配置直连即可。该应用鉴权走可选的 header token（`PANDOCR_API_TOKEN`），天生防 CSRF，origin 白名单在反代下只增加摩擦而无安全价值。公网暴露请设 `PANDOCR_API_TOKEN`，这才是有效的访问控制。
+**RapidOCR 精简部署（`docker-compose.rapidocr.yml`）默认关闭 origin 校验**（`PANDOCR_ENFORCE_ORIGIN_CHECK=0`）：任意域名 / 端口 / 协议 / 反向代理零配置直连即可。该应用鉴权走可选的 header token（`PANDOCR_API_TOKEN`），天生防 CSRF，origin 白名单在反代下只增加摩擦而无安全价值。公网暴露请务必设置 `PANDOCR_API_TOKEN`——模型部署 / 切换端点（`/api/model-runtime/*`）始终要求有效 token（未设置时返回 403），OCR 端点在无 token 时完全开放。
 
 主 `docker-compose.yml`（多模型 GPU 部署）默认仍开启 origin 校验，服务端已启用 `proxy_headers` 信任 `X-Forwarded-Proto`。用 OpenResty / nginx 反代时转发以下两个头即可让校验自动识别外部源：
 
