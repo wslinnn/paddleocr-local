@@ -107,17 +107,16 @@ def create_engine():
 
 
 def build_engine_params() -> dict:
-    """Assemble RapidOCR params from env config (see create_engine for context)."""
-    from rapidocr import EngineType, ModelType
+    """Assemble RapidOCR params from env config (see create_engine for context).
 
-    engine_map = {"onnxruntime": EngineType.ONNXRUNTIME, "openvino": EngineType.OPENVINO}
-    engine_type = engine_map.get(ENGINE_TYPE, EngineType.ONNXRUNTIME)
-    tier_map = {"tiny": ModelType.TINY, "small": ModelType.SMALL, "medium": ModelType.MEDIUM}
-    model_type = tier_map.get(MODEL_TIER, ModelType.SMALL)
+    Values are plain strings — the same form the stock config.yaml uses — so
+    this stays a pure function, testable without rapidocr installed.
+    """
+    engine_type = ENGINE_TYPE if ENGINE_TYPE in {"onnxruntime", "openvino"} else "onnxruntime"
+    model_type = MODEL_TIER if MODEL_TIER in {"tiny", "small", "medium"} else "small"
     params = {
         "Det.engine_type": engine_type,
         "Det.model_type": model_type,
-        # Language values are the same strings the stock config.yaml uses.
         "Det.lang_type": LANG_DET,
         "Rec.engine_type": engine_type,
         "Rec.model_type": model_type,
