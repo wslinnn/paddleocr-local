@@ -215,7 +215,18 @@ def run_one(engine, image: Image.Image):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await get_engine()
+    engine = await get_engine()
+    # Warm up the inference engine: the first run on a new image shape incurs
+    # ~1s of onnxruntime shape inference + memory arena allocation (or OpenVINO
+    # graph compilation). Pre-run a dummy A4@200DPI image so the first real
+    # request doesn't pay this cost.
+    try:
+        import numpy as np
+        dummy = np.zeros((2339, 1654, 3), dtype=np.uint8)
+        await asyncio.to_thread(engine, dummy)
+        logger.info("Engine warmup complete")
+    except Exception as error:
+        logger.warning("Engine warmup failed: %s", error)
     yield
 
 
