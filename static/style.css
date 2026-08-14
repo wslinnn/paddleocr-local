@@ -1619,3 +1619,114 @@ svg {
     box-shadow: 0 8px 28px rgba(15, 23, 42, 0.16);
     padding: 6px;
 }
+
+.pdf-parse-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 1100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.45);
+}
+
+.pdf-parse-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(860px, calc(100vw - 48px));
+    max-height: min(82vh, 760px);
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(15, 23, 42, 0.3);
+    overflow: hidden;
+}
+
+.pdf-parse-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    font-size: 15px;
+}
+
+.pdf-parse-close {
+    border: 0;
+    background: transparent;
+    font-size: 22px;
+    line-height: 1;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.pdf-parse-grid {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+    gap: 12px;
+    padding: 16px;
+    align-content: start;
+}
+
+.pdf-parse-cell {
+    position: relative;
+    display: block;
+    cursor: pointer;
+}
+
+.pdf-parse-cell input {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    z-index: 1;
+    width: 16px;
+    height: 16px;
+    accent-color: var(--brand);
+}
+
+.pdf-parse-thumb {
+    width: 100%;
+    aspect-ratio: 210 / 297;
+    background: #f1f5f9 center / contain no-repeat;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.pdf-parse-cell:hover .pdf-parse-thumb {
+    border-color: rgba(49, 91, 255, 0.45);
+}
+
+.pdf-parse-cell input:checked ~ .pdf-parse-thumb {
+    border-color: var(--brand);
+    box-shadow: 0 0 0 1px var(--brand);
+}
+
+.pdf-parse-no {
+    display: block;
+    margin-top: 4px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.pdf-parse-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--line);
+}
+
+.pdf-parse-count {
+    flex: 1;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.pdf-parse-batch span {
+    font-size: 13px;
+    color: var(--muted);
+}

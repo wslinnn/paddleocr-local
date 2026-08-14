@@ -126,8 +126,6 @@ const els = {
     ignoreHeaderSwitch: document.getElementById('ignore-header-switch'),
     ignoreFooterSwitch: document.getElementById('ignore-footer-switch'),
     ignoreNumberSwitch: document.getElementById('ignore-number-switch'),
-    pdfBatchSizeInput: document.getElementById('pdf-batch-size-input'),
-    pdfPageRangeInput: document.getElementById('pdf-page-range-input'),
     taskTemplate: document.getElementById('task-item-template')
 };
 
@@ -1212,16 +1210,24 @@ async function handleFiles(files) {
     const previousActiveTaskId = activeTaskId;
     const fileList = Array.from(files);
     showIncomingFileState(fileList);
-    const results = await Promise.allSettled(fileList.map((file) => createTaskFromFile(file)));
-    const newTasks = results
-        .filter((result) => result.status === 'fulfilled')
-        .map((result) => result.value);
-    const failed = results.filter((result) => result.status === 'rejected');
 
-    if (failed.length > 0) {
-        console.warn('Some files could not be added', failed.map((result) => result.reason));
-        const message = failed
-            .map((result) => result.reason?.message || String(result.reason || t('文件读取失败')))
+    // Sequential: PDFs open a per-file parse-options dialog, so uploads must
+    // be confirmed one at a time. Failures of one file don't abort the rest.
+    const newTasks = [];
+    const failures = [];
+    for (const file of fileList) {
+        try {
+            const task = await createTaskWithDialog(file);
+            if (task) newTasks.push(task);
+        } catch (error) {
+            failures.push(error);
+        }
+    }
+
+    if (failures.length > 0) {
+        console.warn('Some files could not be added', failures);
+        const message = failures
+            .map((error) => error?.message || String(error || t('文件读取失败')))
             .join('\n');
         els.markdownView.innerHTML = `<div class="empty-result">${escapeHtml(message)}</div>`;
     }
@@ -1246,6 +1252,36 @@ async function handleFiles(files) {
     for (const task of newTasks) {
         await processTask(task, { confirmCompleted: false });
     }
+}
+
+async function createTaskWithDialog(file) {
+    assertUploadWithinLimit(file);
+    const ext = getExtension(file.name);
+    const officeExts = ['ppt', 'pptx', 'doc', 'docx'];
+    const imageExts = ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tiff', 'tif', 'gif'];
+
+    if (officeExts.includes(ext)) {
+        const converted = await convertOfficeToPdf(file);
+        const options = await confirmPdfParseOptions(converted.blob);
+        if (!options) return null;
+        return createPdfTask(converted.blob, file.name.replace(/\.[^.]+$/, '.pdf'), {
+            originalName: file.name,
+            sourceKind: 'office'
+        }, options);
+    }
+
+    if (ext === 'pdf' || file.type === 'application/pdf') {
+        const options = await confirmPdfParseOptions(file);
+        if (!options) return null;
+        return createPdfTask(file, file.name, { sourceKind: 'pdf' }, options);
+    }
+
+    if (imageExts.includes(ext)) {
+        return createImageTask(file);
+    }
+
+    alert(t('不支持的文件格式：{name}', { name: file.name }));
+    throw new Error(`Unsupported file type: ${file.name}`);
 }
 
 function showIncomingFileState(fileList) {
@@ -1289,32 +1325,6 @@ function assertUploadWithinLimit(fileOrBlob, filename = '') {
     }));
 }
 
-async function createTaskFromFile(file) {
-    assertUploadWithinLimit(file);
-    const ext = getExtension(file.name);
-    const officeExts = ['ppt', 'pptx', 'doc', 'docx'];
-    const imageExts = ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tiff', 'tif', 'gif'];
-
-    if (officeExts.includes(ext)) {
-        const converted = await convertOfficeToPdf(file);
-        return createPdfTask(converted.blob, file.name.replace(/\.[^.]+$/, '.pdf'), {
-            originalName: file.name,
-            sourceKind: 'office'
-        });
-    }
-
-    if (ext === 'pdf' || file.type === 'application/pdf') {
-        return createPdfTask(file, file.name, { sourceKind: 'pdf' });
-    }
-
-    if (imageExts.includes(ext)) {
-        return createImageTask(file);
-    }
-
-    alert(t('不支持的文件格式：{name}', { name: file.name }));
-    throw new Error(`Unsupported file type: ${file.name}`);
-}
-
 async function createImageTask(file) {
     const id = createId();
     const dataUrl = await readAsDataUrl(file);
@@ -1349,15 +1359,157 @@ async function createImageTask(file) {
     return task;
 }
 
-async function createPdfTask(fileOrBlob, name, extra = {}) {
+function confirmPdfParseOptions(fileOrBlob) {
+    return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'pdf-parse-dialog';
+        overlay.innerHTML = `
+            <div class="pdf-parse-panel">
+                <div class="pdf-parse-head">
+                    <strong>${escapeHtml(t('选择要解析的页面'))}</strong>
+                    <button type="button" class="pdf-parse-close" aria-label="${escapeHtml(t('取消'))}">&times;</button>
+                </div>
+                <div class="pdf-parse-grid" id="pdf-parse-grid"></div>
+                <div class="pdf-parse-foot">
+                    <button type="button" class="secondary-button" data-action="toggle-all">${escapeHtml(t('全选'))}</button>
+                    <span class="pdf-parse-count">…</span>
+                    <label class="setting-number pdf-parse-batch">
+                        <span>${escapeHtml(t('每批页数'))}</span>
+                        <input type="number" min="1" max="400" step="1" inputmode="numeric">
+                    </label>
+                    <button type="button" class="secondary-button" data-action="cancel">${escapeHtml(t('取消'))}</button>
+                    <button type="button" class="new-task-button" data-action="start" disabled>${escapeHtml(t('开始解析'))}</button>
+                </div>
+            </div>
+        `;
+        const grid = overlay.querySelector('.pdf-parse-grid');
+        const countLabel = overlay.querySelector('.pdf-parse-count');
+        const startBtn = overlay.querySelector('[data-action="start"]');
+        const toggleBtn = overlay.querySelector('[data-action="toggle-all"]');
+        const batchInput = overlay.querySelector('.pdf-parse-batch input');
+        batchInput.value = String(getConfiguredPdfBatchSize());
+
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            observer.disconnect();
+            appendObserver.disconnect();
+            overlay.remove();
+            document.removeEventListener('keydown', onKeydown);
+            resolve(value);
+        };
+        const onKeydown = (event) => {
+            if (event.key === 'Escape') finish(null);
+        };
+        document.addEventListener('keydown', onKeydown);
+        overlay.querySelector('.pdf-parse-close').addEventListener('click', () => finish(null));
+        overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => finish(null));
+        overlay.addEventListener('mousedown', (event) => {
+            if (event.target === overlay) finish(null);
+        });
+
+        const selected = new Set();
+        let pageCount = 0;
+
+        const updateFoot = () => {
+            countLabel.textContent = t('已选 {selected} / {total} 页', { selected: selected.size, total: pageCount });
+            startBtn.disabled = selected.size === 0;
+            toggleBtn.textContent = selected.size === pageCount ? t('全不选') : t('全选');
+        };
+
+        toggleBtn.addEventListener('click', () => {
+            if (selected.size === pageCount) {
+                selected.clear();
+                grid.querySelectorAll('input:checked').forEach((input) => { input.checked = false; });
+            } else {
+                grid.querySelectorAll('input').forEach((input) => {
+                    input.checked = true;
+                    selected.add(Number(input.value));
+                });
+            }
+            updateFoot();
+        });
+
+        startBtn.addEventListener('click', () => {
+            const batchSize = clampPdfBatchSize(batchInput.value);
+            localStorage.setItem(PDF_BATCH_SIZE_STORAGE_KEY, String(batchSize));
+            finish({
+                pdfDoc: pdfDocRef,
+                selectedPages: [...selected].sort((a, b) => a - b),
+                batchSize
+            });
+        });
+
+        let pdfDocRef = null;
+        fileOrBlob.arrayBuffer().then(async (arrayBuffer) => {
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+            pdfDocRef = pdf;
+            pageCount = pdf.numPages;
+            for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
+                const cell = document.createElement('label');
+                cell.className = 'pdf-parse-cell';
+                cell.innerHTML = `
+                    <input type="checkbox" value="${pageNumber}" checked>
+                    <div class="pdf-parse-thumb" data-page="${pageNumber}"></div>
+                    <span class="pdf-parse-no">${pageNumber}</span>
+                `;
+                const input = cell.querySelector('input');
+                input.addEventListener('change', () => {
+                    if (input.checked) selected.add(pageNumber);
+                    else selected.delete(pageNumber);
+                    updateFoot();
+                });
+                selected.add(pageNumber);
+                grid.appendChild(cell);
+            }
+            updateFoot();
+        }).catch((error) => {
+            console.error('PDF preview failed', error);
+            finish(null);
+        });
+
+        // Render thumbnails only as they scroll into view — large PDFs stay fast.
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach((entry) => {
+                if (!entry.isIntersecting || entry.target.dataset.rendered) return;
+                entry.target.dataset.rendered = '1';
+                const pageNumber = Number(entry.target.dataset.page);
+                pdfDocRef?.getPage(pageNumber).then(async (page) => {
+                    const baseViewport = page.getViewport({ scale: 1 });
+                    const scale = 128 / baseViewport.width;
+                    const viewport = page.getViewport({ scale });
+                    const canvas = document.createElement('canvas');
+                    canvas.width = Math.ceil(viewport.width);
+                    canvas.height = Math.ceil(viewport.height);
+                    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                    entry.target.style.backgroundImage = `url(${canvas.toDataURL('image/jpeg', 0.75)})`;
+                }).catch((error) => console.warn('Thumbnail render failed', error));
+            });
+        }, { root: grid, rootMargin: '300px' });
+        const appendObserver = new MutationObserver(() => {
+            grid.querySelectorAll('.pdf-parse-thumb:not([data-observed])').forEach((thumb) => {
+                thumb.dataset.observed = '1';
+                observer.observe(thumb);
+            });
+        });
+        appendObserver.observe(grid, { childList: true, subtree: false });
+
+        document.body.appendChild(overlay);
+    });
+}
+
+async function createPdfTask(fileOrBlob, name, extra = {}, options = {}) {
     const id = createId();
     const arrayBuffer = await fileOrBlob.arrayBuffer();
     const sourceUrl = await uploadTaskSource(id, fileOrBlob, name, 'application/pdf');
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
+    const pdf = options.pdfDoc || await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
     const pageCount = pdf.numPages;
-    const thumbnail = await renderPDFPageDataUrl(pdf, 1, 0.35);
-    const pdfBatchSize = getConfiguredPdfBatchSize();
-    const selectedPages = parsePdfPageRange(els.pdfPageRangeInput?.value, pageCount);
+    const selectedPages = Array.isArray(options.selectedPages) && options.selectedPages.length > 0
+        ? options.selectedPages
+        : null;
+    const thumbnail = await renderPDFPageDataUrl(pdf, selectedPages ? selectedPages[0] : 1, 0.35);
+    const pdfBatchSize = options.batchSize || getConfiguredPdfBatchSize();
     const batches = createPdfBatchDescriptors(pageCount, pdfBatchSize, '', selectedPages);
 
     const now = Date.now();
@@ -2913,7 +3065,6 @@ function shouldRebuildPdfBatchPlan(task) {
 function rebuildPdfBatchPlan(task) {
     const pageCount = Number(task.pageCount || 1);
     const batchSize = getConfiguredPdfBatchSize();
-    const selectedPages = parsePdfPageRange(els.pdfPageRangeInput?.value, pageCount);
     task.pdfBatchSize = batchSize;
     task.batches = createPdfBatchDescriptors(pageCount, batchSize, task.sourceDataUrl, selectedPages);
     task.markdown = '';
@@ -3241,30 +3392,6 @@ function parseStreamingOCREvent(line) {
         console.warn('Ignoring malformed OCR stream event', text);
         return null;
     }
-}
-
-function parsePdfPageRange(raw, pageCount) {
-    const text = String(raw || '').trim();
-    if (!text) return null;
-    const selected = new Set();
-    for (const token of text.split(',')) {
-        const match = token.trim().match(/^(\d+)(?:\s*-\s*(\d+))?$/);
-        if (!match) {
-            throw new Error(t('页码范围格式无效：{token}', { token: token.trim() }));
-        }
-        const start = Number(match[1]);
-        const end = match[2] ? Number(match[2]) : start;
-        if (end < start) {
-            throw new Error(t('页码范围无效：{token}（起始页大于结束页）', { token: token.trim() }));
-        }
-        for (let page = start; page <= end; page += 1) {
-            if (page >= 1 && page <= pageCount) selected.add(page);
-        }
-    }
-    if (selected.size === 0) {
-        throw new Error(t('页码范围超出文档范围（共 {count} 页）', { count: pageCount }));
-    }
-    return [...selected].sort((a, b) => a - b);
 }
 
 function createPdfBatchDescriptors(pageCount, pdfBatchSize, sourceDataUrl = '', selectedPages = null) {
