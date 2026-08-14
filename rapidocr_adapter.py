@@ -13,7 +13,7 @@ from PIL import Image
 logging.basicConfig(level=os.getenv("RAPIDOCR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger("rapidocr-adapter")
 
-MODEL_TIER = os.getenv("RAPIDOCR_MODEL_TIER", "medium").strip().lower()
+MODEL_TIER = os.getenv("RAPIDOCR_MODEL_TIER", "small").strip().lower()
 MODEL_NAME = os.getenv("RAPIDOCR_MODEL_NAME", "PP-OCRv6_medium_rapid")
 PDF_DPI = int(os.getenv("RAPIDOCR_PDF_DPI", "200"))
 MAX_PAGES = int(os.getenv("RAPIDOCR_MAX_PAGES_PER_REQUEST", "50"))
@@ -83,7 +83,7 @@ def create_engine():
     from rapidocr import ModelType, RapidOCR
 
     tier_map = {"tiny": ModelType.TINY, "small": ModelType.SMALL, "medium": ModelType.MEDIUM}
-    model_type = tier_map.get(MODEL_TIER, ModelType.MEDIUM)
+    model_type = tier_map.get(MODEL_TIER, ModelType.SMALL)
     logger.info("Loading RapidOCR (PP-OCRv6, tier=%s)", MODEL_TIER)
     return RapidOCR(
         params={

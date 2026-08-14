@@ -260,7 +260,7 @@ services:
       dockerfile: Dockerfile.rapidocr
     image: pandocr-rapidocr:latest
     environment:
-      - RAPIDOCR_MODEL_TIER=${RAPIDOCR_MODEL_TIER:-medium}
+      - RAPIDOCR_MODEL_TIER=${RAPIDOCR_MODEL_TIER:-small}
       - RAPIDOCR_PDF_DPI=${RAPIDOCR_PDF_DPI:-200}
       - RAPIDOCR_MAX_PAGES_PER_REQUEST=${RAPIDOCR_MAX_PAGES_PER_REQUEST:-50}
       - RAPIDOCR_MODEL_NAME=${RAPIDOCR_MODEL_NAME:-PP-OCRv6_medium_rapid}
