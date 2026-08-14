@@ -9,6 +9,7 @@ window.PANDOCR_I18N = {
         en: {
             'PaddleOCR Local - 本地 OCR 解析工作台': 'PaddleOCR Local - Local OCR Parsing Workbench',
             '松开以上传文件': 'Drop files to upload',
+            '置信度': 'confidence',
             '切换侧边栏': 'Toggle sidebar',
             '切换到中文': 'Switch to Chinese',
             '切换到英文': 'Switch to English',

@@ -13,6 +13,8 @@ const MODEL_STORAGE_KEY = 'pandocr.selectedModelId';
 const API_TOKEN_STORAGE_KEY = 'pandocr.apiToken';
 const LANGUAGE_STORAGE_KEY = 'pandocr.language';
 const DEFAULT_MODEL_ID = 'paddleocr-vl-1.6';
+// OCR lines below this recognition score get an amber marker in the visual view.
+const PPOCR_LOW_CONFIDENCE_THRESHOLD = 0.6;
 const DEFAULT_PDF_ZOOM = 1;
 const PDF_DEFAULT_PAGE_WIDTH = 595;
 const PDF_FIT_WIDTH_GUTTER = 12;
@@ -2333,7 +2335,11 @@ function layoutPPOCRTextLayer(stage, page, width, height, toolbar, imageElement 
         element.type = 'button';
         element.className = 'ocr-text-line';
         element.appendChild(createPPOCRLineLabel(line.text));
-        element.title = line.text;
+        const lowConfidence = Number.isFinite(line.score) && line.score < PPOCR_LOW_CONFIDENCE_THRESHOLD;
+        if (lowConfidence) element.classList.add('ocr-text-line-lowconf');
+        element.title = Number.isFinite(line.score)
+            ? `${line.text}（${t('置信度')} ${(line.score * 100).toFixed(0)}%）`
+            : line.text;
         element.setAttribute('aria-label', line.text);
         element.dataset.page = String(line.sourcePage || page.pageNumber || '');
         element.dataset.pageResultIndex = String(line.pageResultIndex ?? '');
@@ -2377,6 +2383,9 @@ function createPPOCRTextOnlyLayer(stage, lines, toolbar) {
         const element = document.createElement('button');
         element.type = 'button';
         element.className = 'ocr-text-only-line';
+        if (Number.isFinite(line.score) && line.score < PPOCR_LOW_CONFIDENCE_THRESHOLD) {
+            element.classList.add('ocr-text-line-lowconf');
+        }
         element.textContent = line.text;
         bindPPOCRLineEvents(element, toolbar, line);
         fallback.appendChild(element);
