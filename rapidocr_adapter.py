@@ -31,7 +31,20 @@ def boxes_to_bbox(box):
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
-def to_ppocr_page(txts, scores, boxes, page_index: int = 0) -> dict:
+def image_to_data_url(image: Image.Image) -> str:
+    """PIL.Image -> JPEG base64 data URL for the frontend visualization layer.
+
+    The frontend positions text boxes as box.x / img.naturalWidth, so the image
+    returned here MUST be the exact image OCR ran on (same pixel dimensions as the
+    box coordinate space) — do not resize, only re-encode.
+    """
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=85)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def to_ppocr_page(txts, scores, boxes, page_index: int = 0, input_image_b64: str | None = None) -> dict:
     """Convert one RapidOCR page result into the paddleocr-ocr-api prunedResult shape.
 
     RapidOCR returns boxes as a numpy array (N×4×2) and txts/scores as tuples,
@@ -47,7 +60,7 @@ def to_ppocr_page(txts, scores, boxes, page_index: int = 0) -> dict:
             "rec_polys": [[[float(p[0]), float(p[1])] for p in box] for box in box_list],
             "page_index": page_index,
         },
-        "inputImage": None,
+        "inputImage": input_image_b64,
     }
 
 
@@ -187,5 +200,6 @@ async def ocr(request: Request):
     async with INFERENCE_LOCK:
         for index, image in enumerate(pages):
             txts, scores, boxes = await asyncio.to_thread(run_one, engine, image)
-            pages_result.append(to_ppocr_page(txts, scores, boxes, page_index=index))
+            img_b64 = await asyncio.to_thread(image_to_data_url, image)
+            pages_result.append(to_ppocr_page(txts, scores, boxes, page_index=index, input_image_b64=img_b64))
     return build_response(pages_result, resolved_type)

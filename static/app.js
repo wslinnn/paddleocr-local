@@ -4513,7 +4513,10 @@ function stripLargeOCRFields(value) {
 
     const output = {};
     Object.entries(value).forEach(([key, nestedValue]) => {
-        if (key === 'inputImage' || key === 'outputImages') return;
+        // inputImage is kept so the pp-ocrv6 / rapidocr text-box visualization
+        // (createPPOCRVisualPage) can render the faded source image + positioned
+        // text boxes. Only outputImages is stripped (unused + bulky).
+        if (key === 'outputImages') return;
         output[key] = stripLargeOCRFields(nestedValue);
     });
     return output;

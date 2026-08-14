@@ -1,6 +1,8 @@
 import unittest
 
-from rapidocr_adapter import to_ppocr_page
+from PIL import Image
+
+from rapidocr_adapter import image_to_data_url, to_ppocr_page
 
 
 class ToPPOCRPageTests(unittest.TestCase):
@@ -48,6 +50,15 @@ class ToPPOCRPageTests(unittest.TestCase):
         page = to_ppocr_page(["a", "b"], [0.8, 0.7], boxes)
         self.assertEqual(page["prunedResult"]["rec_boxes"][0], [0.0, 0.0, 10.0, 5.0])
         self.assertEqual(page["prunedResult"]["rec_boxes"][1], [18.0, 20.0, 30.0, 30.0])
+
+    def test_input_image_is_passed_through(self):
+        page = to_ppocr_page(["hi"], [0.9], [], input_image_b64="data:image/jpeg;base64,AAA")
+        self.assertEqual(page["inputImage"], "data:image/jpeg;base64,AAA")
+
+    def test_image_to_data_url_returns_jpeg_data_url(self):
+        url = image_to_data_url(Image.new("RGB", (4, 3), color=(255, 0, 0)))
+        self.assertTrue(url.startswith("data:image/jpeg;base64,"))
+        self.assertGreater(len(url.split(",", 1)[1]), 0)
 
 
 if __name__ == "__main__":
