@@ -3,6 +3,7 @@ import base64
 import io
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -38,9 +39,14 @@ def image_to_data_url(image: Image.Image) -> str:
     returned here MUST be the exact image OCR ran on (same pixel dimensions as the
     box coordinate space) — do not resize, only re-encode.
     """
+    t0 = time.perf_counter()
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=85)
+    t1 = time.perf_counter()
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    t2 = time.perf_counter()
+    logger.info("[timing] image_to_data_url: jpeg_save %.3fs | base64 %.3fs | jpeg_size=%dKB",
+                t1 - t0, t2 - t1, len(buffer.getvalue()) // 1024)
     return f"data:image/jpeg;base64,{encoded}"
 
 
@@ -166,7 +172,11 @@ def run_one(engine, image: Image.Image):
     """
     import numpy as np
 
-    output = engine(np.array(image))
+    t0 = time.perf_counter()
+    arr = np.array(image)
+    t1 = time.perf_counter()
+    output = engine(arr)
+    t2 = time.perf_counter()
     if hasattr(output, "boxes"):
         boxes = output.boxes
         txts = output.txts
@@ -178,6 +188,9 @@ def run_one(engine, image: Image.Image):
             boxes.append(line[0])
             txts.append(line[1])
             scores.append(line[2])
+    t3 = time.perf_counter()
+    logger.info("[timing] run_one: np.array %.3fs | engine(infer) %.3fs | parse %.3fs | lines=%d",
+                t1 - t0, t2 - t1, t3 - t2, len(txts) if txts else 0)
     return txts, scores, boxes
 
 
@@ -199,15 +212,32 @@ async def health():
 
 @app.post("/ocr")
 async def ocr(request: Request):
+    t_start = time.perf_counter()
     file_bytes, file_type = await read_input(request)
+    t_input = time.perf_counter()
     pages, resolved_type = prepare_images(file_bytes, file_type)
     if not pages:
         raise HTTPException(status_code=400, detail="No images were produced for OCR")
+    t_prep = time.perf_counter()
     engine = await get_engine()
+    t_engine = time.perf_counter()
+    logger.info("[timing] request: read_input %.3fs | prepare_images(%d pages) %.3fs | get_engine %.3fs",
+                t_input - t_start, len(pages), t_prep - t_input, t_engine - t_prep)
     pages_result = []
     async with INFERENCE_LOCK:
         for index, image in enumerate(pages):
+            t_page = time.perf_counter()
             txts, scores, boxes = await asyncio.to_thread(run_one, engine, image)
+            t_run = time.perf_counter()
             img_b64 = await asyncio.to_thread(image_to_data_url, image)
+            t_enc = time.perf_counter()
             pages_result.append(to_ppocr_page(txts, scores, boxes, page_index=index, input_image_b64=img_b64))
-    return build_response(pages_result, resolved_type)
+            t_done = time.perf_counter()
+            logger.info("[timing] page %d/%d: run_one %.3fs | image_to_data_url %.3fs | to_ppocr %.3fs | page_total %.3fs",
+                        index + 1, len(pages), t_run - t_page, t_enc - t_run, t_done - t_enc, t_done - t_page)
+    t_infer = time.perf_counter()
+    result = build_response(pages_result, resolved_type)
+    t_build = time.perf_counter()
+    logger.info("[timing] DONE: inference_loop %.3fs | build_response %.3fs | request_total %.3fs",
+                t_infer - t_engine, t_build - t_infer, t_build - t_start)
+    return result
