@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PaddleOCR Local - 本地 OCR 解析工作台</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232f6df6'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-family='Arial,sans-serif' font-size='34' font-weight='700' fill='white'%3EP%3C/text%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/static/style.css?v=44">
+    <link rel="stylesheet" href="/static/style.css?v=45">
     <script src="/static/vendor/pdfjs/pdf.min.js"></script>
     <script src="/static/vendor/pdf-lib/pdf-lib.min.js"></script>
     <script src="/static/vendor/marked/marked.min.js"></script>
@@ -31,6 +31,9 @@
                 </div>
             </div>
             <div class="topbar-actions">
+                <button class="icon-button" id="settings-btn" title="解析设置">
+                    <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 1 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.66V21a2.1 2.1 0 1 1-4.2 0v-.08a1.8 1.8 0 0 0-1.1-1.66 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 1 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.66-1.1H3a2.1 2.1 0 1 1 0-4.2h.08A1.8 1.8 0 0 0 4.74 8.6a1.8 1.8 0 0 0-.36-1.98l-.05-.05A2.1 2.1 0 1 1 7.3 3.6l.05.05a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.42 2.35V2a2.1 2.1 0 1 1 4.2 0v.08a1.8 1.8 0 0 0 1.1 1.66 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 1 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.66 1.1H22a2.1 2.1 0 1 1 0 4.2h-.08A1.8 1.8 0 0 0 19.4 15Z"/></svg>
+                </button>
                 <button class="language-toggle" id="language-toggle" type="button" title="Switch language" aria-label="Switch language">
                     <span>中</span>
                     <strong>EN</strong>
@@ -61,34 +64,6 @@
                         新解析
                     </button>
                 </div>
-
-                <details class="settings-panel">
-                    <summary>
-                        <span>
-                            <svg viewBox="0 0 24 24"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.8 1.8 0 0 0 .36 1.98l.05.05a2.1 2.1 0 1 1-2.97 2.97l-.05-.05a1.8 1.8 0 0 0-1.98-.36 1.8 1.8 0 0 0-1.1 1.66V21a2.1 2.1 0 1 1-4.2 0v-.08a1.8 1.8 0 0 0-1.1-1.66 1.8 1.8 0 0 0-1.98.36l-.05.05a2.1 2.1 0 1 1-2.97-2.97l.05-.05A1.8 1.8 0 0 0 4.6 15a1.8 1.8 0 0 0-1.66-1.1H3a2.1 2.1 0 1 1 0-4.2h.08A1.8 1.8 0 0 0 4.74 8.6a1.8 1.8 0 0 0-.36-1.98l-.05-.05A2.1 2.1 0 1 1 7.3 3.6l.05.05a1.8 1.8 0 0 0 1.98.36A1.8 1.8 0 0 0 10.42 2.35V2a2.1 2.1 0 1 1 4.2 0v.08a1.8 1.8 0 0 0 1.1 1.66 1.8 1.8 0 0 0 1.98-.36l.05-.05a2.1 2.1 0 1 1 2.97 2.97l-.05.05a1.8 1.8 0 0 0-.36 1.98 1.8 1.8 0 0 0 1.66 1.1H22a2.1 2.1 0 1 1 0 4.2h-.08A1.8 1.8 0 0 0 19.4 15Z"/></svg>
-                            解析设置
-                        </span>
-                    </summary>
-                    <div class="settings-grid">
-                        <label><input type="checkbox" id="chart-recognition-switch"> 图表解析</label>
-                        <label><input type="checkbox" id="doc-unwarping-switch"> 文档矫正</label>
-                        <label><input type="checkbox" id="doc-orientation-switch"> 方向识别</label>
-                        <label><input type="checkbox" id="seal-recognition-switch" checked> 印章识别</label>
-                        <label><input type="checkbox" id="format-content-switch" checked disabled> 内容格式化</label>
-                        <label><input type="checkbox" id="formula-number-switch" checked> 公式编号</label>
-                        <label><input type="checkbox" id="ignore-header-switch" checked> 忽略页眉</label>
-                        <label><input type="checkbox" id="ignore-footer-switch" checked> 忽略页脚</label>
-                        <label><input type="checkbox" id="ignore-number-switch" checked> 忽略页码</label>
-                        <label class="setting-number">
-                            <span>每批页数</span>
-                            <input type="number" id="pdf-batch-size-input" min="1" max="400" step="1" value="1" inputmode="numeric">
-                        </label>
-                        <label class="setting-number">
-                            <span>页码范围</span>
-                            <input type="text" id="pdf-page-range-input" placeholder="1-5, 8, 11-13" autocomplete="off">
-                        </label>
-                    </div>
-                </details>
 
                 <div class="task-tabs">
                     <button class="task-tab active" data-filter="all">最近上传</button>
@@ -198,7 +173,29 @@
         </div>
     </template>
 
-    <script charset="UTF-8" src="/static/i18n.js?v=7"></script>
-    <script charset="UTF-8" src="/static/app.js?v=104"></script>
+    <div class="settings-popover hidden" id="settings-popover">
+        <div class="settings-grid">
+            <label><input type="checkbox" id="chart-recognition-switch"> 图表解析</label>
+            <label><input type="checkbox" id="doc-unwarping-switch"> 文档矫正</label>
+            <label><input type="checkbox" id="doc-orientation-switch"> 方向识别</label>
+            <label><input type="checkbox" id="seal-recognition-switch" checked> 印章识别</label>
+            <label><input type="checkbox" id="format-content-switch" checked disabled> 内容格式化</label>
+            <label><input type="checkbox" id="formula-number-switch" checked> 公式编号</label>
+            <label><input type="checkbox" id="ignore-header-switch" checked> 忽略页眉</label>
+            <label><input type="checkbox" id="ignore-footer-switch" checked> 忽略页脚</label>
+            <label><input type="checkbox" id="ignore-number-switch" checked> 忽略页码</label>
+            <label class="setting-number">
+                <span>每批页数</span>
+                <input type="number" id="pdf-batch-size-input" min="1" max="400" step="1" value="1" inputmode="numeric">
+            </label>
+            <label class="setting-number">
+                <span>页码范围</span>
+                <input type="text" id="pdf-page-range-input" placeholder="1-5, 8, 11-13" autocomplete="off">
+            </label>
+        </div>
+    </div>
+
+    <script charset="UTF-8" src="/static/i18n.js?v=8"></script>
+    <script charset="UTF-8" src="/static/app.js?v=105"></script>
 </body>
 </html>

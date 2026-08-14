@@ -92,6 +92,8 @@ const els = {
     taskSearch: document.getElementById('task-search'),
     clearHistoryBtn: document.getElementById('clear-history-btn'),
     storageBtn: document.getElementById('storage-btn'),
+    settingsBtn: document.getElementById('settings-btn'),
+    settingsPopover: document.getElementById('settings-popover'),
     languageToggle: document.getElementById('language-toggle'),
     statusDot: document.getElementById('model-status-dot'),
     statusText: document.getElementById('model-status-text'),
@@ -209,6 +211,7 @@ function setupEventListeners() {
     els.taskSearch.addEventListener('input', renderTaskList);
     els.clearHistoryBtn.addEventListener('click', clearHistory);
     els.storageBtn?.addEventListener('click', () => openStorageManager(els.storageBtn));
+    els.settingsBtn?.addEventListener('click', () => toggleSettingsPopover());
     els.startBtn.addEventListener('click', () => processActiveTask());
     els.copyBtn.addEventListener('click', copyActiveResult);
     els.downloadBtn.addEventListener('click', downloadActiveTask);
@@ -1126,22 +1129,17 @@ function reconcileTaskStatus(task) {
 }
 
 function dedupeTasks(taskItems) {
-    const byFingerprint = new Map();
+    // Key by task id: distinct uploads of the same file are distinct tasks.
+    // (A content fingerprint used to collapse them — uploading the same file
+    // twice left a single list entry after refresh.)
+    const byId = new Map();
     taskItems.forEach((task) => {
-        const fingerprint = [
-            task.name,
-            task.originalName || '',
-            task.sourceKind || '',
-            task.size || 0,
-            task.pageCount || 0,
-            task.modelId || ''
-        ].join('|');
-        const existing = byFingerprint.get(fingerprint);
+        const existing = byId.get(task.id);
         if (!existing || (task.updatedAt || 0) > (existing.updatedAt || 0)) {
-            byFingerprint.set(fingerprint, task);
+            byId.set(task.id, task);
         }
     });
-    return Array.from(byFingerprint.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    return Array.from(byId.values()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
 async function loadServerTasks() {
@@ -3545,8 +3543,27 @@ async function clearHistory() {
     resetWorkbench();
 }
 
-function formatStorageBytes(bytes) {
-    if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+function toggleSettingsPopover() {
+    if (!els.settingsPopover || !els.settingsBtn) return;
+    if (!els.settingsPopover.classList.contains('hidden')) {
+        els.settingsPopover.classList.add('hidden');
+        return;
+    }
+    const rect = els.settingsBtn.getBoundingClientRect();
+    els.settingsPopover.style.top = `${rect.bottom + 8}px`;
+    els.settingsPopover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    els.settingsPopover.classList.remove('hidden');
+    setTimeout(() => {
+        const close = (event) => {
+            if (els.settingsPopover.contains(event.target) || els.settingsBtn.contains(event.target)) return;
+            els.settingsPopover.classList.add('hidden');
+            document.removeEventListener('mousedown', close);
+        };
+        document.addEventListener('mousedown', close);
+    }, 0);
+}
+
+function formatStorageBytes(bytes) {    if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
     if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
     return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
