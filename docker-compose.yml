@@ -267,6 +267,8 @@ services:
       - RAPIDOCR_ENGINE_TYPE=${RAPIDOCR_ENGINE_TYPE:-onnxruntime}
       - RAPIDOCR_NUM_THREADS=${RAPIDOCR_NUM_THREADS:-}
       - RAPIDOCR_REC_BATCH_NUM=${RAPIDOCR_REC_BATCH_NUM:-3}
+      - RAPIDOCR_LANG_DET=${RAPIDOCR_LANG_DET:-ch}
+      - RAPIDOCR_LANG_REC=${RAPIDOCR_LANG_REC:-ch}
     restart: unless-stopped
     volumes:
       - ./data:/app/data

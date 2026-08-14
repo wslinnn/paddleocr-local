@@ -2,7 +2,14 @@ import unittest
 
 from PIL import Image
 
-from rapidocr_adapter import image_to_data_url, to_ppocr_page
+from rapidocr_adapter import build_engine_params, image_to_data_url, to_ppocr_page
+
+
+class BuildEngineParamsTests(unittest.TestCase):
+    def test_language_params_are_passed_through(self):
+        params = build_engine_params()
+        self.assertEqual(params["Det.lang_type"], "ch")
+        self.assertEqual(params["Rec.lang_type"], "ch")
 
 
 class ToPPOCRPageTests(unittest.TestCase):

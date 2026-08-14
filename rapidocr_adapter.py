@@ -27,6 +27,11 @@ _threads_env = os.getenv("RAPIDOCR_NUM_THREADS", "").strip()
 NUM_THREADS = int(_threads_env) if _threads_env else (os.cpu_count() or 0)
 # Recognition batch size; smaller lowers single-image latency on CPU.
 REC_BATCH_NUM = int(os.getenv("RAPIDOCR_REC_BATCH_NUM", "3"))
+# OCR languages (engine-level config — changing language loads different model
+# files). Det supports ch / en / multi; Rec language availability depends on
+# the RapidOCR model list (ch, ch_doc, en, ...). Defaults to Chinese.
+LANG_DET = os.getenv("RAPIDOCR_LANG_DET", "ch").strip().lower()
+LANG_REC = os.getenv("RAPIDOCR_LANG_REC", "ch").strip().lower()
 
 ENGINE = None
 ENGINE_ERROR: str | None = None
@@ -94,7 +99,16 @@ def create_engine():
     image runs on Intel (openvino) or AMD (onnxruntime) without code changes.
     Models download lazily to the RapidOCR default location on first use.
     """
-    from rapidocr import EngineType, ModelType, RapidOCR
+    from rapidocr import RapidOCR
+
+    logger.info("Loading RapidOCR (PP-OCRv6, tier=%s, engine=%s, lang=%s/%s, threads=%d, rec_batch=%d)",
+                MODEL_TIER, ENGINE_TYPE, LANG_DET, LANG_REC, NUM_THREADS, REC_BATCH_NUM)
+    return RapidOCR(params=build_engine_params())
+
+
+def build_engine_params() -> dict:
+    """Assemble RapidOCR params from env config (see create_engine for context)."""
+    from rapidocr import EngineType, ModelType
 
     engine_map = {"onnxruntime": EngineType.ONNXRUNTIME, "openvino": EngineType.OPENVINO}
     engine_type = engine_map.get(ENGINE_TYPE, EngineType.ONNXRUNTIME)
@@ -103,8 +117,11 @@ def create_engine():
     params = {
         "Det.engine_type": engine_type,
         "Det.model_type": model_type,
+        # Language values are the same strings the stock config.yaml uses.
+        "Det.lang_type": LANG_DET,
         "Rec.engine_type": engine_type,
         "Rec.model_type": model_type,
+        "Rec.lang_type": LANG_REC,
         "Rec.rec_batch_num": REC_BATCH_NUM,
     }
     if NUM_THREADS > 0:
@@ -113,9 +130,7 @@ def create_engine():
         else:
             params["EngineConfig.onnxruntime.intra_op_num_threads"] = NUM_THREADS
             params["EngineConfig.onnxruntime.inter_op_num_threads"] = 1
-    logger.info("Loading RapidOCR (PP-OCRv6, tier=%s, engine=%s, threads=%d, rec_batch=%d)",
-                MODEL_TIER, ENGINE_TYPE, NUM_THREADS, REC_BATCH_NUM)
-    return RapidOCR(params=params)
+    return params
 
 
 async def get_engine():
