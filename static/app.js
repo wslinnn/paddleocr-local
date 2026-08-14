@@ -2281,6 +2281,13 @@ function openPPOCRCorrectionEditor(toolbar) {
         popover.remove();
     });
     popover.querySelector('[data-action="cancel"]').addEventListener('click', () => popover.remove());
+    popover.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            popover.remove();
+            active.element?.focus();
+        }
+    });
     stage.appendChild(popover);
 
     const toolbarRect = toolbar.getBoundingClientRect();
@@ -2540,6 +2547,51 @@ function bindPPOCRLineEvents(element, toolbar, line) {
     element.addEventListener('mouseenter', activate);
     element.addEventListener('focus', activate);
     element.addEventListener('click', activate);
+    element.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            activatePPOCRLine(element, toolbar, line);
+            openPPOCRCorrectionEditor(toolbar);
+            return;
+        }
+        const directionByKey = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'prev', ArrowRight: 'next' };
+        const direction = directionByKey[event.key];
+        if (!direction) return;
+        event.preventDefault();
+        const neighbor = findPPOCRNeighborLine(element, direction);
+        if (neighbor) neighbor.focus();
+    });
+}
+
+function findPPOCRNeighborLine(element, direction) {
+    const container = element.closest('.ocr-page-stage') || els.markdownView;
+    const lines = Array.from(container.querySelectorAll('.ocr-text-line, .ocr-text-only-line'));
+    const currentIndex = lines.indexOf(element);
+    if (currentIndex === -1) return null;
+    if (direction === 'prev') return lines[currentIndex - 1] || null;
+    if (direction === 'next') return lines[currentIndex + 1] || null;
+
+    const rect = element.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    let best = null;
+    let bestDistance = Infinity;
+    lines.forEach((candidate) => {
+        if (candidate === element) return;
+        const candidateRect = candidate.getBoundingClientRect();
+        const candidateCenterX = candidateRect.left + candidateRect.width / 2;
+        const candidateCenterY = candidateRect.top + candidateRect.height / 2;
+        const vertical = direction === 'up' ? centerY - candidateCenterY : candidateCenterY - centerY;
+        if (vertical <= 2) return;
+        // Prefer the nearest line straight above/below; horizontal offset is a
+        // tie-breaker so multi-column layouts jump within the same column.
+        const distance = vertical + Math.abs(candidateCenterX - centerX) * 0.3;
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            best = candidate;
+        }
+    });
+    return best;
 }
 
 function activatePPOCRLine(element, toolbar, line, { scrollSource = false } = {}) {
