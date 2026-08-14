@@ -1757,6 +1757,87 @@ async def get_task(task_id: str):
     return task
 
 
+def export_page_size(page: dict, boxes: list) -> tuple[int, int]:
+    """Page pixel dimensions for the reflowed PDF.
+
+    Prefer the real inputImage dimensions so text box coords align exactly;
+    fall back to the largest box coordinate when the image is unavailable.
+    """
+    page_image = page.get("pageImage") or page.get("inputImage")
+    if isinstance(page_image, str) and page_image:
+        try:
+            payload = page_image.split(",", 1)[1] if "," in page_image else page_image
+            with Image.open(io.BytesIO(base64.b64decode(payload))) as img:
+                return img.size
+        except Exception:
+            pass
+    max_x = max((float(b[2]) for b in boxes if isinstance(b, (list, tuple)) and len(b) >= 4), default=612.0)
+    max_y = max((float(b[3]) for b in boxes if isinstance(b, (list, tuple)) and len(b) >= 4), default=792.0)
+    return int(max_x), int(max_y)
+
+
+def build_relaid_pdf(ocr_results: list) -> bytes:
+    """Generate a reflowed PDF: white background + OCR text positioned by rec_boxes.
+
+    Each detected text box becomes selectable/searchable vector text placed at
+    its original coordinates. No source image is used as a backdrop.
+    """
+    import fitz
+
+    doc = fitz.open()
+    for page in ocr_results:
+        page_dict = page if isinstance(page, dict) else {}
+        pruned = page_dict.get("prunedResult") or page_dict
+        boxes = pruned.get("rec_boxes") or []
+        texts = pruned.get("rec_texts") or []
+        width, height = export_page_size(page_dict, boxes)
+        pdf_page = doc.new_page(width=width, height=height)
+        for box, text in zip(boxes, texts):
+            if not text or not isinstance(box, (list, tuple)) or len(box) < 4:
+                continue
+            try:
+                x1, y1, x2, y2 = (float(v) for v in box[:4])
+            except (TypeError, ValueError):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            rect = fitz.Rect(x1, y1, x2, y2)
+            fontsize = max(6.0, (y2 - y1) * 0.8)
+            for _ in range(6):
+                rc = pdf_page.insert_textbox(rect, str(text), fontname="china-s", fontsize=fontsize, align=0)
+                if rc >= 0:
+                    break
+                fontsize *= 0.8
+                if fontsize < 4:
+                    break
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    doc.close()
+    return buffer.getvalue()
+
+
+@app.get("/api/tasks/{task_id}/export")
+async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf)$")):
+    """Export a task's OCR results as a reflowed PDF (text positioned by rec_boxes)."""
+    path = task_file_path(task_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Task not found")
+    try:
+        task = await run_in_threadpool(read_task_file, path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        raise HTTPException(status_code=500, detail="Failed to read task")
+    task = hydrate_task_detail(task_id, task)
+    ocr_results = task.get("ocrResults") or []
+    if not ocr_results:
+        raise HTTPException(status_code=400, detail="Task has no OCR results to export")
+    pdf_bytes = await run_in_threadpool(build_relaid_pdf, ocr_results)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_task_id(task_id)}.pdf"'},
+    )
+
+
 @app.put("/api/tasks/{task_id}")
 async def save_task(task_id: str, request: Request):
     """Persist one task to the local project data directory."""

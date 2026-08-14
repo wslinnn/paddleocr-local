@@ -460,6 +460,55 @@
         }
       }
     },
+    "/api/tasks/{task_id}/export": {
+      "get": {
+        "summary": "Export Task",
+        "description": "Export a task's OCR results as a reflowed PDF (text positioned by rec_boxes).",
+        "operationId": "export_task_api_tasks__task_id__export_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(pdf)$",
+              "default": "pdf",
+              "title": "Format"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/convert/to-pdf": {
       "post": {
         "summary": "Convert To Pdf",
@@ -531,11 +580,45 @@
         }
       }
     },
+    "/api/pp-ocrv6-rapid": {
+      "post": {
+        "summary": "Proxy Rapidocr",
+        "description": "Proxy request to the RapidOCR (CPU) adapter service.",
+        "operationId": "proxy_rapidocr_api_pp_ocrv6_rapid_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/unlimited-ocr": {
       "post": {
         "summary": "Proxy Unlimited Ocr",
         "description": "Proxy request to the optional Unlimited-OCR adapter service.",
         "operationId": "proxy_unlimited_ocr_api_unlimited_ocr_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ovisocr2": {
+      "post": {
+        "summary": "Proxy Ovisocr2",
+        "description": "Proxy request to the optional OvisOCR2 vLLM adapter service.",
+        "operationId": "proxy_ovisocr2_api_ovisocr2_post",
         "responses": {
           "200": {
             "description": "Successful Response",

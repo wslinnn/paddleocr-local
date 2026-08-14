@@ -745,6 +745,36 @@ class ServerTaskApiTests(unittest.TestCase):
         finally:
             self.server.API_TOKEN = original
 
+    def test_build_relaid_pdf_positions_text_by_boxes(self):
+        ocr_results = [{
+            "prunedResult": {
+                "rec_texts": ["你好世界", "test"],
+                "rec_boxes": [[10, 10, 200, 40], [10, 50, 200, 80]],
+            },
+        }]
+        pdf_bytes = self.server.build_relaid_pdf(ocr_results)
+        self.assertGreater(len(pdf_bytes), 100)
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        self.assertEqual(len(doc), 1)
+        text = doc[0].get_text()
+        self.assertIn("你好世界", text)
+        self.assertIn("test", text)
+        doc.close()
+
+    def test_export_task_returns_reflowed_pdf(self):
+        task = {
+            "id": "export1", "name": "x.pdf", "sourceKind": "pdf",
+            "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 1,
+            "createdAt": 1, "updatedAt": 1, "status": "completed",
+            "ocrResults": [{"prunedResult": {"rec_texts": ["hi"], "rec_boxes": [[10, 10, 50, 30]]}}],
+        }
+        self.client.put("/api/tasks/export1", json=task)
+        response = self.client.get("/api/tasks/export1/export?format=pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/pdf")
+        self.assertGreater(len(response.content), 100)
+
 
 if __name__ == "__main__":
     unittest.main()
