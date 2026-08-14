@@ -745,6 +745,30 @@ class ServerTaskApiTests(unittest.TestCase):
         finally:
             self.server.API_TOKEN = original
 
+    def test_password_gate_blocks_api_without_session(self):
+        self.server.AUTH_PASSWORD = "letmein"
+        self.server.AUTH_SESSIONS.clear()
+        try:
+            response = self.client.get("/api/tasks")
+            self.assertEqual(response.status_code, 401)
+
+            login = self.client.post("/api/auth/login", json={"password": "wrong"})
+            self.assertEqual(login.status_code, 401)
+
+            login = self.client.post("/api/auth/login", json={"password": "letmein"})
+            self.assertEqual(login.status_code, 200)
+
+            response = self.client.get("/api/tasks")
+            self.assertEqual(response.status_code, 200)
+        finally:
+            self.server.AUTH_PASSWORD = ""
+            self.server.AUTH_SESSIONS.clear()
+
+    def test_password_gate_inactive_by_default(self):
+        self.server.AUTH_PASSWORD = ""
+        response = self.client.get("/api/tasks")
+        self.assertEqual(response.status_code, 200)
+
     def test_build_relaid_pdf_positions_text_by_boxes(self):
         ocr_results = [{
             "prunedResult": {

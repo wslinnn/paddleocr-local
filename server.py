@@ -129,6 +129,12 @@ MODEL_RUNTIME_STARTUP = os.getenv("PANDOCR_ACTIVE_MODEL_ON_START", "paddleocr-vl
 DOCKER_SOCKET_PATH = os.getenv("PANDOCR_DOCKER_SOCKET", "/var/run/docker.sock")
 MODEL_SWITCH_TIMEOUT = float(os.getenv("PANDOCR_MODEL_SWITCH_TIMEOUT", "1200"))
 API_TOKEN = os.getenv("PANDOCR_API_TOKEN", "").strip()
+# Optional browser login gate. Set PANDOCR_PASSWORD to enable: all /api/* then
+# require a session cookie obtained via POST /api/auth/login. Long-lived by
+# design (personal self-hosted tool): 30-day sessions.
+AUTH_PASSWORD = os.getenv("PANDOCR_PASSWORD", "").strip()
+AUTH_SESSION_TTL = int(os.getenv("PANDOCR_AUTH_SESSION_TTL_DAYS", "30")) * 86400
+AUTH_SESSIONS: dict[str, float] = {}  # session token -> expiry epoch
 # Endpoints that orchestrate Docker (build/deploy/switch containers) are
 # privileged: they always require a valid token, even when PANDOCR_API_TOKEN is
 # empty, so a publicly exposed instance cannot be taken over anonymously.
@@ -1211,6 +1217,14 @@ async def enforce_request_security(request: Request, call_next):
     if API_TOKEN and request.url.path.startswith("/api/") and not request_is_authenticated(request):
         return JSONResponse(status_code=401, content={"detail": "Missing or invalid API token"})
 
+    auth_exempt = (
+        request.url.path == "/api/auth/login"
+        or request.url.path == "/api/auth/logout"
+        or request.url.path == "/api/models"
+    )
+    if AUTH_PASSWORD and request.url.path.startswith("/api/") and not auth_exempt and not request_session_is_valid(request):
+        return JSONResponse(status_code=401, content={"detail": "Login required", "loginRequired": True})
+
     privileged_write = (
         request.method in {"POST", "PUT", "PATCH", "DELETE"}
         and any(request.url.path.startswith(prefix) for prefix in PRIVILEGED_API_PREFIXES)
@@ -1274,6 +1288,7 @@ async def get_models():
         "data": model_catalog(),
         "maxUploadBytes": MAX_REQUEST_BYTES,
         "authRequired": bool(API_TOKEN),
+        "loginRequired": bool(AUTH_PASSWORD),
         "originProtection": ENFORCE_ORIGIN_CHECK,
         "maxConcurrentOcr": MAX_CONCURRENT_OCR,
     }
@@ -1322,6 +1337,51 @@ def request_is_authenticated(request: Request) -> bool:
         token = header.split(" ", 1)[1].strip()
     token = token or request.headers.get("x-pandocr-token", "").strip()
     return bool(token) and secrets.compare_digest(token, API_TOKEN)
+
+
+def create_auth_session() -> str:
+    token = secrets.token_urlsafe(32)
+    AUTH_SESSIONS[token] = time.time() + AUTH_SESSION_TTL
+    return token
+
+
+def request_session_is_valid(request: Request) -> bool:
+    token = request.cookies.get("pandocr_session", "")
+    if not token:
+        return False
+    expiry = AUTH_SESSIONS.get(token)
+    if expiry is None or expiry < time.time():
+        AUTH_SESSIONS.pop(token, None)
+        return False
+    return True
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: LoginRequest):
+    if not AUTH_PASSWORD:
+        return {"ok": True, "loginRequired": False}
+    if not secrets.compare_digest(request.password, AUTH_PASSWORD):
+        raise HTTPException(status_code=401, detail="Wrong password")
+    token = create_auth_session()
+    response = JSONResponse({"ok": True, "loginRequired": True})
+    response.set_cookie(
+        "pandocr_session", token,
+        max_age=AUTH_SESSION_TTL, httponly=True, samesite="lax",
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    token = request.cookies.get("pandocr_session", "")
+    AUTH_SESSIONS.pop(token, None)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("pandocr_session")
+    return response
 
 
 def validate_task_data_dir() -> None:

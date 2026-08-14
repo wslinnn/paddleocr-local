@@ -449,6 +449,13 @@ async function apiFetch(url, options = {}) {
     let response = await fetch(url, requestOptions);
     if (response.status !== 401 || !isLocalApiUrl(url)) return response;
 
+    // Session gate (PANDOCR_PASSWORD): try a browser login once, then retry.
+    const loginOk = await trySessionLogin();
+    if (loginOk) {
+        response = await fetch(url, requestOptions);
+        if (response.status !== 401) return response;
+    }
+
     const token = window.prompt(t('请输入 PaddleOCR Local API Token'));
     if (!token) return response;
     localStorage.setItem(API_TOKEN_STORAGE_KEY, token.trim());
@@ -457,6 +464,22 @@ async function apiFetch(url, options = {}) {
         headers: authHeaders(options.headers, url)
     });
     return response;
+}
+
+async function trySessionLogin() {
+    const password = window.prompt(t('请输入访问密码'));
+    if (!password) return false;
+    try {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        return response.ok;
+    } catch (error) {
+        console.warn('Session login failed', error);
+        return false;
+    }
 }
 
 async function responseErrorText(response) {
