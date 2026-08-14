@@ -18,10 +18,10 @@ step() {
 }
 
 step "Checking Python syntax"
-"$PYTHON" -m py_compile server.py unlimited_ocr_adapter.py
+"$PYTHON" -m py_compile server.py ovisocr2_adapter.py rapidocr_adapter.py unlimited_ocr_adapter.py
 
 step "Running server unit tests"
-"$PYTHON" -m unittest tests.test_server -v
+"$PYTHON" -m unittest discover -s tests -p "test_*.py" -v
 
 step "Checking frontend JavaScript syntax"
 node --check static/i18n.js
