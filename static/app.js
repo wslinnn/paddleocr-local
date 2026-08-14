@@ -91,6 +91,7 @@ const els = {
     taskList: document.getElementById('task-list'),
     taskSearch: document.getElementById('task-search'),
     clearHistoryBtn: document.getElementById('clear-history-btn'),
+    storageBtn: document.getElementById('storage-btn'),
     languageToggle: document.getElementById('language-toggle'),
     statusDot: document.getElementById('model-status-dot'),
     statusText: document.getElementById('model-status-text'),
@@ -207,6 +208,7 @@ function setupEventListeners() {
 
     els.taskSearch.addEventListener('input', renderTaskList);
     els.clearHistoryBtn.addEventListener('click', clearHistory);
+    els.storageBtn?.addEventListener('click', () => openStorageManager(els.storageBtn));
     els.startBtn.addEventListener('click', () => processActiveTask());
     els.copyBtn.addEventListener('click', copyActiveResult);
     els.downloadBtn.addEventListener('click', downloadActiveTask);
@@ -3541,6 +3543,95 @@ async function clearHistory() {
     tasks = [];
     activeTaskId = null;
     resetWorkbench();
+}
+
+function formatStorageBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB';
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+async function openStorageManager(anchor) {
+    document.querySelector('.storage-menu')?.remove();
+    let stats = null;
+    try {
+        const response = await apiFetch(`${API_BASE}/tasks/storage`);
+        if (response.ok) stats = await response.json();
+    } catch (error) {
+        console.warn('Storage stats failed', error);
+    }
+
+    const menu = document.createElement('div');
+    menu.className = 'download-format-menu storage-menu';
+    const info = document.createElement('div');
+    info.className = 'storage-menu-info';
+    info.textContent = stats
+        ? t('{count} 个任务 · {size}', {
+            count: stats.taskCount,
+            size: formatStorageBytes(stats.totalBytes)
+        })
+        : t('存储信息不可用');
+    menu.appendChild(info);
+
+    const actions = [
+        { label: t('清理 30 天前的任务'), body: { keepDays: 30 } },
+        { label: t('仅保留最近 50 个任务'), body: { keepCount: 50 } },
+    ];
+    for (const action of actions) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'download-format-item';
+        button.textContent = action.label;
+        button.addEventListener('click', async () => {
+            menu.remove();
+            await runTaskCleanup(action.body, action.label);
+        });
+        menu.appendChild(button);
+    }
+
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = `${rect.bottom + 6}px`;
+    menu.style.left = `${Math.max(8, rect.left - 120)}px`;
+    document.body.appendChild(menu);
+    setTimeout(() => {
+        const close = (event) => {
+            if (!menu.contains(event.target)) {
+                menu.remove();
+                document.removeEventListener('mousedown', close);
+            }
+        };
+        document.addEventListener('mousedown', close);
+    }, 0);
+}
+
+async function runTaskCleanup(body, label) {
+    if (!confirm(t('确认{label}？此操作不可撤销。', { label }))) return;
+    try {
+        const response = await apiFetch(`${API_BASE}/tasks/cleanup`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!response.ok) throw new Error(await responseErrorText(response));
+        const result = await response.json();
+        await loadTasks();
+        if (activeTaskId && !tasks.some((task) => task.id === activeTaskId)) {
+            activeTaskId = null;
+            resetWorkbench();
+        } else {
+            renderTaskList();
+            refreshTaskUi(getActiveTask());
+        }
+        alert(t('已删除 {count} 个任务，释放 {size}。', {
+            count: result.deleted,
+            size: formatStorageBytes(result.freedBytes)
+        }));
+    } catch (error) {
+        console.error(error);
+        alert(error.message || t('清理失败，请稍后重试。'));
+    }
 }
 
 function resetWorkbench() {

@@ -1669,6 +1669,25 @@ def clear_task_dirs() -> None:
             shutil.rmtree(path)
 
 
+def scan_task_storage() -> list[dict]:
+    """Inventory the task store: one entry per task with its disk usage and mtime."""
+    entries = []
+    if not TASK_DATA_DIR.exists():
+        return entries
+    for path in TASK_DATA_DIR.iterdir():
+        if not path.is_dir() or not re.fullmatch(r"[A-Za-z0-9_-]{6,80}", path.name):
+            continue
+        total_bytes = sum(file.stat().st_size for file in path.rglob("*") if file.is_file())
+        updated_at = path.stat().st_mtime
+        entries.append({"taskId": path.name, "bytes": total_bytes, "updatedAt": updated_at})
+    return entries
+
+
+class TaskCleanupRequest(BaseModel):
+    keepDays: Optional[int] = Field(default=None, ge=1)
+    keepCount: Optional[int] = Field(default=None, ge=1)
+
+
 async def read_upload_bytes(file: UploadFile, max_bytes: int | None = None) -> bytes:
     chunks = []
     total = 0
@@ -1797,6 +1816,18 @@ async def list_tasks():
     """List locally persisted document parsing task summaries."""
     tasks = await run_in_threadpool(list_task_summaries)
     return {"tasks": tasks}
+
+
+# NOTE: declared before /api/tasks/{task_id} — otherwise "storage" is captured
+# as a task id and this route is unreachable.
+@app.get("/api/tasks/storage")
+async def get_task_storage():
+    """Report task-store usage so users can see what needs cleaning."""
+    entries = await run_in_threadpool(scan_task_storage)
+    return {
+        "taskCount": len(entries),
+        "totalBytes": sum(entry["bytes"] for entry in entries),
+    }
 
 
 @app.get("/api/tasks/{task_id}")
@@ -1955,6 +1986,32 @@ async def clear_tasks():
     """Delete all locally persisted tasks."""
     await run_in_threadpool(clear_task_dirs)
     return {"ok": True}
+
+
+@app.post("/api/tasks/cleanup")
+async def cleanup_tasks(request: TaskCleanupRequest):
+    """Delete old tasks: by age (keepDays) and/or keeping only the newest N (keepCount)."""
+    if request.keepDays is None and request.keepCount is None:
+        raise HTTPException(status_code=400, detail="Specify keepDays or keepCount")
+
+    def run_cleanup() -> dict:
+        entries = scan_task_storage()
+        by_recency = sorted(entries, key=lambda entry: entry["updatedAt"], reverse=True)
+        survivors = {entry["taskId"] for entry in by_recency[: request.keepCount]} if request.keepCount else set()
+        cutoff = (time.time() - request.keepDays * 86400) if request.keepDays else None
+        deleted = 0
+        freed = 0
+        for entry in entries:
+            if entry["taskId"] in survivors:
+                continue
+            if cutoff is not None and entry["updatedAt"] >= cutoff:
+                continue
+            remove_task_dir(entry["taskId"])
+            deleted += 1
+            freed += entry["bytes"]
+        return {"deleted": deleted, "freedBytes": freed}
+
+    return await run_in_threadpool(run_cleanup)
 
 
 @app.post("/api/convert/to-pdf")

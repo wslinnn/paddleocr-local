@@ -176,6 +176,58 @@
         }
       }
     },
+    "/api/auth/login": {
+      "post": {
+        "summary": "Auth Login",
+        "operationId": "auth_login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Auth Logout",
+        "operationId": "auth_logout_api_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/source": {
       "post": {
         "summary": "Upload Task Source",
@@ -509,6 +561,60 @@
         }
       }
     },
+    "/api/tasks/storage": {
+      "get": {
+        "summary": "Get Task Storage",
+        "description": "Report task-store usage so users can see what needs cleaning.",
+        "operationId": "get_task_storage_api_tasks_storage_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/cleanup": {
+      "post": {
+        "summary": "Cleanup Tasks",
+        "description": "Delete old tasks: by age (keepDays) and/or keeping only the newest N (keepCount).",
+        "operationId": "cleanup_tasks_api_tasks_cleanup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCleanupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/convert/to-pdf": {
       "post": {
         "summary": "Convert To Pdf",
@@ -691,6 +797,19 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "LoginRequest": {
+        "properties": {
+          "password": {
+            "type": "string",
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
       "ModelDeployRequest": {
         "properties": {
           "modelId": {
@@ -727,6 +846,36 @@
           "modelId"
         ],
         "title": "ModelSwitchRequest"
+      },
+      "TaskCleanupRequest": {
+        "properties": {
+          "keepDays": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keepdays"
+          },
+          "keepCount": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keepcount"
+          }
+        },
+        "type": "object",
+        "title": "TaskCleanupRequest"
       },
       "UnlimitedOcrBackendRequest": {
         "properties": {

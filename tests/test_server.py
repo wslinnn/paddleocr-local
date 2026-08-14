@@ -769,6 +769,34 @@ class ServerTaskApiTests(unittest.TestCase):
         response = self.client.get("/api/tasks")
         self.assertEqual(response.status_code, 200)
 
+    def test_storage_report_and_cleanup_by_count(self):
+        for index in range(3):
+            task = {
+                "id": f"stor{index}0abcde", "name": "x.pdf", "sourceKind": "pdf",
+                "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 1,
+                "createdAt": index, "updatedAt": index, "status": "completed",
+                "ocrResults": [{"prunedResult": {"rec_texts": ["hi"], "rec_boxes": [[1, 1, 9, 9]]}}],
+            }
+            self.client.put(f"/api/tasks/stor{index}0abcde", json=task)
+
+        # The test store is shared across tests in this class, so assert
+        # relative counts instead of absolute values.
+        report = self.client.get("/api/tasks/storage")
+        self.assertEqual(report.status_code, 200)
+        before_count = report.json()["taskCount"]
+        self.assertGreaterEqual(before_count, 3)
+
+        cleanup = self.client.post("/api/tasks/cleanup", json={"keepCount": 1})
+        self.assertEqual(cleanup.status_code, 200)
+        self.assertEqual(cleanup.json()["deleted"], before_count - 1)
+
+        remaining = self.client.get("/api/tasks")
+        self.assertEqual(len(remaining.json()["tasks"]), 1)
+
+    def test_cleanup_requires_parameters(self):
+        response = self.client.post("/api/tasks/cleanup", json={})
+        self.assertEqual(response.status_code, 400)
+
     def test_build_relaid_pdf_positions_text_by_boxes(self):
         ocr_results = [{
             "prunedResult": {
