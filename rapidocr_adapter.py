@@ -103,7 +103,31 @@ def create_engine():
 
     logger.info("Loading RapidOCR (PP-OCRv6, tier=%s, engine=%s, lang=%s/%s, threads=%d, rec_batch=%d)",
                 MODEL_TIER, ENGINE_TYPE, LANG_DET, LANG_REC, NUM_THREADS, REC_BATCH_NUM)
-    return RapidOCR(params=build_engine_params())
+    return RapidOCR(params=coerce_engine_params(build_engine_params()))
+
+
+def coerce_engine_params(raw_params: dict) -> dict:
+    """Convert string config values to the enums RapidOCR's params API requires.
+
+    The params dict path validates strictly for Enum instances (unlike the
+    yaml config path, which parses strings), so build_engine_params stays a
+    pure string function and this bridges it at runtime.
+    """
+    from rapidocr import EngineType, LangDet, LangRec, ModelType
+
+    enum_by_key = {
+        "Det.engine_type": EngineType,
+        "Det.model_type": ModelType,
+        "Det.lang_type": LangDet,
+        "Rec.engine_type": EngineType,
+        "Rec.model_type": ModelType,
+        "Rec.lang_type": LangRec,
+    }
+    params = {}
+    for key, value in raw_params.items():
+        enum_cls = enum_by_key.get(key)
+        params[key] = enum_cls(str(value)) if enum_cls is not None else value
+    return params
 
 
 def build_engine_params() -> dict:
