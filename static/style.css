@@ -52,10 +52,12 @@ svg {
 }
 
 .topbar {
-    height: 56px;
+    min-height: 56px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    flex-wrap: wrap;
+    row-gap: 8px;
     padding: 0 22px;
     border-bottom: 1px solid var(--line);
     background: rgba(255, 255, 255, 0.92);
@@ -756,7 +758,7 @@ svg {
 
 .source-viewer {
     overflow: auto;
-    padding: 18px 24px;
+    padding: 18px 24px 62px;
 }
 
 .drop-zone {
