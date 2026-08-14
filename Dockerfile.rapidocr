@@ -11,8 +11,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # rapidocr core + onnxruntime engine. Install onnxruntime explicitly: the
-# rapidocr[onnxruntime] extra does not reliably pull it in. PP-OCRv6 default
-# models are downloaded lazily to /root/.cache/rapidocr on first run.
+# rapidocr[onnxruntime] extra does not reliably pull it in.
 RUN pip install --no-cache-dir \
       rapidocr \
       onnxruntime \
@@ -21,6 +20,11 @@ RUN pip install --no-cache-dir \
       fastapi==0.136.1 \
       uvicorn==0.46.0 \
       python-multipart==0.0.27
+
+# Pre-download the default medium models into the image so first inference is
+# hot (no download latency / gateway timeout). Falls back to lazy download if
+# the build environment has no network.
+RUN python -c "from rapidocr import ModelType, RapidOCR; RapidOCR(params={'Det.model_type':ModelType.MEDIUM,'Rec.model_type':ModelType.MEDIUM})" || echo "model prefetch skipped"
 
 WORKDIR /app
 COPY rapidocr_adapter.py /app/rapidocr_adapter.py

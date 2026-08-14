@@ -266,7 +266,6 @@ services:
       - RAPIDOCR_MODEL_NAME=${RAPIDOCR_MODEL_NAME:-PP-OCRv6_medium_rapid}
     restart: unless-stopped
     volumes:
-      - ./model_cache_rapidocr:/root/.cache/rapidocr
       - ./data:/app/data
     command: uvicorn rapidocr_adapter:app --host 0.0.0.0 --port 8080
     healthcheck:

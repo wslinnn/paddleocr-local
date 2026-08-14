@@ -14,7 +14,6 @@ logging.basicConfig(level=os.getenv("RAPIDOCR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger("rapidocr-adapter")
 
 MODEL_TIER = os.getenv("RAPIDOCR_MODEL_TIER", "medium").strip().lower()
-MODEL_CACHE_DIR = os.getenv("RAPIDOCR_MODEL_CACHE_DIR", "/root/.cache/rapidocr")
 MODEL_NAME = os.getenv("RAPIDOCR_MODEL_NAME", "PP-OCRv6_medium_rapid")
 PDF_DPI = int(os.getenv("RAPIDOCR_PDF_DPI", "200"))
 MAX_PAGES = int(os.getenv("RAPIDOCR_MAX_PAGES_PER_REQUEST", "50"))
@@ -77,17 +76,17 @@ def create_engine():
     """Load the RapidOCR engine configured for PP-OCRv6 at the requested tier.
 
     RapidOCR() defaults to PP-OCRv6 small; to honor RAPIDOCR_MODEL_TIER we pass
-    explicit model_type via params. Global.model_root_dir points at the docker
-    volume so downloaded models survive container rebuilds.
+    explicit model_type via params. Models live in the image (pre-downloaded at
+    build time, see Dockerfile.rapidocr); a non-default tier downloads lazily
+    to the same default location on first use.
     """
     from rapidocr import ModelType, RapidOCR
 
     tier_map = {"tiny": ModelType.TINY, "small": ModelType.SMALL, "medium": ModelType.MEDIUM}
     model_type = tier_map.get(MODEL_TIER, ModelType.MEDIUM)
-    logger.info("Loading RapidOCR (PP-OCRv6, tier=%s, cache=%s)", MODEL_TIER, MODEL_CACHE_DIR)
+    logger.info("Loading RapidOCR (PP-OCRv6, tier=%s)", MODEL_TIER)
     return RapidOCR(
         params={
-            "Global.model_root_dir": MODEL_CACHE_DIR,
             "Det.model_type": model_type,
             "Rec.model_type": model_type,
         }
