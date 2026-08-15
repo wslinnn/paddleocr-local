@@ -1987,6 +1987,10 @@ def build_searchable_pdf(ocr_results: list) -> bytes:
     import fitz
 
     font_path = find_cjk_font()
+    # ONE font instance for the whole document: TextWriter.append per line is
+    # then near-free, instead of re-parsing the ~20MB Noto ttc per page that
+    # per-call insert_text(fontfile=...) incurred.
+    font = fitz.Font(fontfile=font_path) if font_path else fitz.Font("china-s")
     doc = fitz.open()
     for page in ocr_results:
         page_dict = page if isinstance(page, dict) else {}
@@ -2004,6 +2008,8 @@ def build_searchable_pdf(ocr_results: list) -> bytes:
         pruned = page_dict.get("prunedResult") or {}
         boxes = pruned.get("rec_boxes") or []
         texts = pruned.get("rec_texts") or []
+        writer = fitz.TextWriter(pdf_page.rect)
+        appended = 0
         for box, text in zip(boxes, texts):
             if not text or not isinstance(box, (list, tuple)) or len(box) < 4:
                 continue
@@ -2015,16 +2021,20 @@ def build_searchable_pdf(ocr_results: list) -> bytes:
                 continue
             fontsize = max(6.0, (y2 - y1) * 0.8)
             baseline = y2 - (y2 - y1) * 0.2
-            text_kwargs = {"fontsize": fontsize, "render_mode": 3}
-            if font_path:
-                text_kwargs["fontname"] = "noto"
-                text_kwargs["fontfile"] = font_path
-            else:
-                text_kwargs["fontname"] = "china-s"
             try:
-                pdf_page.insert_text(fitz.Point(x1, baseline), str(text), **text_kwargs)
+                writer.append(fitz.Point(x1, baseline), str(text), font=font, fontsize=fontsize)
+                appended += 1
             except Exception:
                 continue
+        if appended > 0:
+            writer.write_text(pdf_page, render_mode=3)
+    if font_path:
+        # Keep only used glyphs — without this the full ~20MB Noto collection
+        # is embedded and deflate-compressed on save (the slow+huge failure).
+        try:
+            doc.subset_fonts()
+        except Exception:
+            logger.warning("subset_fonts failed; searchable PDF will embed the full font")
     buffer = io.BytesIO()
     doc.save(buffer, deflate=True)
     doc.close()
