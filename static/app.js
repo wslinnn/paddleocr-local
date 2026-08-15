@@ -1231,16 +1231,44 @@ async function handleFiles(files) {
     const fileList = Array.from(files);
     showIncomingFileState(fileList);
 
-    // Sequential: PDFs open a per-file parse-options dialog, so uploads must
-    // be confirmed one at a time. Failures of one file don't abort the rest.
-    const newTasks = [];
+    // Dialogs run one at a time (per-file page selection), but each confirmed
+    // file's upload/create runs in the background — uploads must not
+    // serialize the dialog sequence.
+    const pendingCreations = [];
     const failures = [];
     for (const file of fileList) {
         try {
-            const task = await createTaskWithDialog(file);
-            if (task) newTasks.push(task);
+            assertUploadWithinLimit(file);
+            const ext = getExtension(file.name);
+            if (['ppt', 'pptx', 'doc', 'docx'].includes(ext)) {
+                const converted = await convertOfficeToPdf(file);
+                const options = await confirmPdfParseOptions(converted.blob);
+                if (!options) continue;
+                pendingCreations.push(createPdfTask(converted.blob, file.name.replace(/\.[^.]+$/, '.pdf'), {
+                    originalName: file.name,
+                    sourceKind: 'office'
+                }, options));
+            } else if (ext === 'pdf' || file.type === 'application/pdf') {
+                const options = await confirmPdfParseOptions(file);
+                if (!options) continue;
+                pendingCreations.push(createPdfTask(file, file.name, { sourceKind: 'pdf' }, options));
+            } else if (['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tiff', 'tif', 'gif'].includes(ext)) {
+                pendingCreations.push(createImageTask(file));
+            } else {
+                alert(t('不支持的文件格式：{name}', { name: file.name }));
+                throw new Error(`Unsupported file type: ${file.name}`);
+            }
         } catch (error) {
             failures.push(error);
+        }
+    }
+
+    const newTasks = [];
+    for (const creation of await Promise.allSettled(pendingCreations)) {
+        if (creation.status === 'fulfilled') {
+            if (creation.value) newTasks.push(creation.value);
+        } else {
+            failures.push(creation.reason);
         }
     }
 
@@ -1277,36 +1305,6 @@ async function handleFiles(files) {
             console.error('Task processing failed to start', task?.id, error);
         }
     }
-}
-
-async function createTaskWithDialog(file) {
-    assertUploadWithinLimit(file);
-    const ext = getExtension(file.name);
-    const officeExts = ['ppt', 'pptx', 'doc', 'docx'];
-    const imageExts = ['png', 'jpg', 'jpeg', 'bmp', 'webp', 'tiff', 'tif', 'gif'];
-
-    if (officeExts.includes(ext)) {
-        const converted = await convertOfficeToPdf(file);
-        const options = await confirmPdfParseOptions(converted.blob);
-        if (!options) return null;
-        return createPdfTask(converted.blob, file.name.replace(/\.[^.]+$/, '.pdf'), {
-            originalName: file.name,
-            sourceKind: 'office'
-        }, options);
-    }
-
-    if (ext === 'pdf' || file.type === 'application/pdf') {
-        const options = await confirmPdfParseOptions(file);
-        if (!options) return null;
-        return createPdfTask(file, file.name, { sourceKind: 'pdf' }, options);
-    }
-
-    if (imageExts.includes(ext)) {
-        return createImageTask(file);
-    }
-
-    alert(t('不支持的文件格式：{name}', { name: file.name }));
-    throw new Error(`Unsupported file type: ${file.name}`);
 }
 
 function showIncomingFileState(fileList) {
