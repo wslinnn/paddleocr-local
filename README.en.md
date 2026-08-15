@@ -14,11 +14,11 @@ Five isolated models are supported:
 
 ## Fork Highlights
 
-- [x] **Pure-CPU PP-OCRv6-Rapid model**: no GPU or PaddlePaddle needed; two-container one-command deployment via `docker-compose.rapidocr.yml`; engine (OpenVINO/onnxruntime), threads, batch size, and OCR language are all configurable; startup warmup removes first-request overhead
-- [x] **Background task queue**: uploads return instantly with live progress and ETA, cancellable; parsing survives closing the tab; multiple tasks queue automatically and interrupted work resumes
+- [x] **Pure-CPU PP-OCRv6-Rapid model**: no GPU or PaddlePaddle needed; two-container one-command deployment via `docker-compose.rapidocr.yml`; tiny/small/medium tier switching from the UI (models pre-baked into the image); engine (OpenVINO/onnxruntime), threads, and batch size configurable
+- [x] **Background task queue**: uploads return instantly with live progress and ETA, preemptive cancellation; parsing survives closing the tab; tasks queue automatically, resume after interruption and server restarts; pinned live section with per-task start/stop and pause-all
 - [x] **PDF page-picker dialog**: pick pages to parse from a thumbnail grid, confirm per file, uploads run in parallel in the background
 - [x] **Visual proofreading**: OCR text-box positioning, low-confidence lines marked in amber, result stats (pages/lines/chars/confidence), keyboard navigation with inline correction, click-to-locate in the source view
-- [x] **Exports**: TXT, reflowed PDF (embedded CJK font, selectable and searchable), Markdown/JSON, download format menu
+- [x] **Exports**: TXT, reflowed PDF (vector text), searchable PDF (original look + full-text search), DOCX (editable Word), Markdown/JSON, download format menu
 - [x] **Security**: optional browser password gate, mandatory auth on Docker orchestration endpoints, full test suite in CI
 - [x] **UX**: full-screen drag & drop and Ctrl/⌘+V screenshot pasting, task storage management, HiDPI-sharp rendering, Chinese/English UI
 
@@ -58,20 +58,20 @@ The installer asks which model to deploy first and downloads only that model. Fo
 ## Features
 
 - Image, PDF, PPT/PPTX, and DOC/DOCX parsing; five models with on-demand deployment (including a pure-CPU option)
-- Background task queue: progress with ETA, cancellation, tab-safe parsing, batch queuing, resumable work
+- Background task queue: progress with ETA, cancellation, tab-safe parsing, batch queuing, resumable work, restart recovery, pause-all
 - Side-by-side source and result views with synchronized zoom
-- OCR text-box positioning, low-confidence marking, keyboard navigation, click-to-correct
+- OCR text-box positioning, low-confidence marking, keyboard navigation, click-to-correct, tier switching (tiny/small/medium)
 - Markdown, table, formula, and visual-region rendering
-- Export to Markdown, TXT, JSON, and reflowed PDF
+- Export to Markdown, TXT, JSON, reflowed PDF, searchable PDF, and DOCX
 - Task history with storage usage stats and cleanup
 - Chinese and English UI
 
 ## Roadmap
 
-- [ ] Frontend switching of model tier (tiny/small/medium) and OCR language (runtime hot reload)
+- [x] Frontend model-tier switching (tiny/small/medium, runtime hot reload, pre-baked models)
 - [ ] Refresh README screenshots (current ones show the old UI)
-- [ ] Searchable PDF export (image layer + text layer)
-- [ ] DOCX export
+- [x] Searchable PDF export (image layer + invisible text layer)
+- [x] DOCX export (one paragraph per line, editable)
 - [ ] Proofreading: undo / batch replace
 - [ ] Localized backend error messages
 - [ ] API calling examples (curl / Python)
