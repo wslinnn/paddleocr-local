@@ -1880,6 +1880,23 @@ NOTO_CJK_FONT_CANDIDATES = (
 )
 
 
+def subset_document_fonts(doc) -> None:
+    """Subset embedded fonts; requires the optional fonttools package.
+
+    Without it PyMuPDF silently embeds full font collections (~20MB for Noto
+    CJK) — historically this failure was invisible, so it is now loud.
+    """
+    try:
+        import fontTools  # noqa: F401
+    except ImportError:
+        logger.warning("fonttools is not installed — PDF fonts will NOT be subset and exports stay huge. Install fonttools in the web image.")
+        return
+    try:
+        doc.subset_fonts()
+    except Exception:
+        logger.warning("subset_fonts failed; PDF will embed the full font")
+
+
 def find_cjk_font() -> str | None:
     """Locate an installed Noto CJK font for embedding.
 
@@ -1954,10 +1971,7 @@ def build_relaid_pdf(ocr_results: list) -> bytes:
                 if text_kwargs["fontsize"] < 4:
                     break
     if font_path:
-        try:
-            doc.subset_fonts()
-        except Exception:
-            logger.warning("subset_fonts failed; PDF will embed the full font")
+        subset_document_fonts(doc)
     buffer = io.BytesIO()
     doc.save(buffer)
     doc.close()
@@ -2031,10 +2045,7 @@ def build_searchable_pdf(ocr_results: list) -> bytes:
     if font_path:
         # Keep only used glyphs — without this the full ~20MB Noto collection
         # is embedded and deflate-compressed on save (the slow+huge failure).
-        try:
-            doc.subset_fonts()
-        except Exception:
-            logger.warning("subset_fonts failed; searchable PDF will embed the full font")
+        subset_document_fonts(doc)
     buffer = io.BytesIO()
     doc.save(buffer, deflate=True)
     doc.close()
