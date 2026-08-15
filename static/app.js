@@ -96,6 +96,7 @@ const els = {
     settingsBtn: document.getElementById('settings-btn'),
     settingsPopover: document.getElementById('settings-popover'),
     cancelJobBtn: document.getElementById('cancel-job-btn'),
+    engineTierSelect: document.getElementById('engine-tier-select'),
     languageToggle: document.getElementById('language-toggle'),
     statusDot: document.getElementById('model-status-dot'),
     statusText: document.getElementById('model-status-text'),
@@ -212,6 +213,7 @@ function setupEventListeners() {
     els.clearHistoryBtn.addEventListener('click', clearHistory);
     els.storageBtn?.addEventListener('click', () => openStorageManager(els.storageBtn));
     els.settingsBtn?.addEventListener('click', () => toggleSettingsPopover());
+    els.engineTierSelect?.addEventListener('change', () => saveEngineSettings({ tier: els.engineTierSelect.value }));
     els.cancelJobBtn?.addEventListener('click', async () => {
         const task = getActiveTask();
         if (!task) return;
@@ -558,6 +560,7 @@ async function checkBackendConnection() {
         await loadModelRuntime({ silent: true });
         applyModelBatchSizeRecommendation();
         startModelRuntimePolling();
+        loadEngineSettings().catch(() => {});
         updateActiveModelDisplay(getActiveTask());
     } catch (error) {
         els.statusDot.className = 'dot error';
@@ -631,6 +634,7 @@ function updateParseSettingsAvailability() {
     for (const sw of unsupported) {
         if (sw) sw.disabled = rapid;
     }
+    if (els.engineTierSelect) els.engineTierSelect.disabled = !rapid;
 }
 
 function renderModelSelect() {
@@ -3881,6 +3885,27 @@ async function clearHistory() {
     tasks = [];
     activeTaskId = null;
     resetWorkbench();
+}
+
+async function loadEngineSettings() {
+    const response = await apiFetch(`${API_BASE}/engine-settings`);
+    if (!response.ok) return;
+    const settings = await response.json();
+    if (els.engineTierSelect && settings.tier) els.engineTierSelect.value = settings.tier;
+}
+
+async function saveEngineSettings(payload) {
+    try {
+        const response = await apiFetch(`${API_BASE}/engine-settings`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error(await responseErrorText(response));
+    } catch (error) {
+        console.error(error);
+        alert(error.message || t('引擎设置保存失败'));
+    }
 }
 
 function toggleSettingsPopover() {

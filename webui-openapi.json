@@ -817,6 +817,36 @@
         }
       }
     },
+    "/api/engine-settings": {
+      "get": {
+        "summary": "Get Engine Settings",
+        "operationId": "get_engine_settings_api_engine_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Put Engine Settings",
+        "operationId": "put_engine_settings_api_engine_settings_put",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/unlimited-ocr": {
       "post": {
         "summary": "Proxy Unlimited Ocr",

@@ -908,6 +908,49 @@ class ServerTaskApiTests(unittest.TestCase):
         response = self.client.post("/api/tasks/taskq30003/process")
         self.assertEqual(response.status_code, 400)
 
+    def test_engine_settings_proxy(self):
+        calls = []
+
+        class FakeSettingsClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            def _respond(self, payload):
+                return Mock(status_code=200, json=Mock(return_value=payload))
+
+            async def get(self, url):
+                calls.append(("GET", url, None))
+                return self._respond({"tier": "small", "det_lang": "ch", "rec_lang": "ch"})
+
+            async def put(self, url, json=None):
+                calls.append(("PUT", url, json))
+                return self._respond({"tier": "medium", "det_lang": "ch", "rec_lang": "ch"})
+
+        with patch.object(self.server, "ENABLE_RAPIDOCR", True), \
+             patch.object(self.server.httpx, "AsyncClient", FakeSettingsClient):
+            get_response = self.client.get("/api/engine-settings")
+            self.assertEqual(get_response.status_code, 200)
+            self.assertEqual(get_response.json()["tier"], "small")
+
+            put_response = self.client.put("/api/engine-settings", json={"tier": "medium"})
+            self.assertEqual(put_response.status_code, 200)
+            self.assertEqual(put_response.json()["tier"], "medium")
+
+        self.assertEqual(calls[0][0], "GET")
+        self.assertTrue(calls[0][1].endswith("/engine/settings"))
+        self.assertEqual(calls[1][2], {"tier": "medium"})
+
+    def test_engine_settings_returns_404_when_rapidocr_disabled(self):
+        with patch.object(self.server, "ENABLE_RAPIDOCR", False):
+            response = self.client.get("/api/engine-settings")
+            self.assertEqual(response.status_code, 404)
+
     def test_task_status_reconciles_stale_queued_job_against_disk(self):
         async def fake_runner(ocr_request, raw):
             return self._fake_ocr_result("page")

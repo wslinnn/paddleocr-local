@@ -1,15 +1,67 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from PIL import Image
 
+import rapidocr_adapter
 from rapidocr_adapter import build_engine_params, image_to_data_url, to_ppocr_page
 
 
 class BuildEngineParamsTests(unittest.TestCase):
     def test_language_params_are_passed_through(self):
-        params = build_engine_params()
+        params = build_engine_params({"tier": "small", "det_lang": "ch", "rec_lang": "ch"})
         self.assertEqual(params["Det.lang_type"], "ch")
         self.assertEqual(params["Rec.lang_type"], "ch")
+
+    def test_params_use_runtime_settings(self):
+        params = build_engine_params({"tier": "medium", "det_lang": "en", "rec_lang": "en"})
+        self.assertEqual(params["Det.model_type"], "medium")
+        self.assertEqual(params["Rec.model_type"], "medium")
+        self.assertEqual(params["Det.lang_type"], "en")
+        self.assertEqual(params["Rec.lang_type"], "en")
+
+
+class EngineSettingsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._path = Path(self._tmp.name) / "engine-settings.json"
+        self._original_path = rapidocr_adapter.SETTINGS_PATH
+        self._original_settings = dict(rapidocr_adapter.CURRENT_SETTINGS)
+        rapidocr_adapter.SETTINGS_PATH = self._path
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        rapidocr_adapter.SETTINGS_PATH = self._original_path
+        rapidocr_adapter.CURRENT_SETTINGS = self._original_settings
+
+    def test_validate_merges_partial_and_rejects_invalid(self):
+        base = {"tier": "small", "det_lang": "ch", "rec_lang": "ch"}
+        rapidocr_adapter.CURRENT_SETTINGS = base
+        merged = rapidocr_adapter.validate_engine_settings({"tier": "medium"})
+        self.assertEqual(merged["tier"], "medium")
+        self.assertEqual(merged["det_lang"], "ch")
+        with self.assertRaises(ValueError):
+            rapidocr_adapter.validate_engine_settings({"tier": "huge"})
+        with self.assertRaises(ValueError):
+            rapidocr_adapter.validate_engine_settings({"det_lang": "jp"})
+
+    def test_save_and_load_round_trip(self):
+        rapidocr_adapter.CURRENT_SETTINGS = {"tier": "tiny", "det_lang": "en", "rec_lang": "en"}
+        rapidocr_adapter.save_engine_settings(rapidocr_adapter.CURRENT_SETTINGS)
+        self.assertEqual(rapidocr_adapter.load_engine_settings(), rapidocr_adapter.CURRENT_SETTINGS)
+
+    def test_load_returns_defaults_when_file_missing_or_corrupt(self):
+        self.assertEqual(
+            rapidocr_adapter.load_engine_settings(),
+            rapidocr_adapter.default_engine_settings(),
+        )
+        self._path.write_text("{not json", encoding="utf-8")
+        self.assertEqual(
+            rapidocr_adapter.load_engine_settings(),
+            rapidocr_adapter.default_engine_settings(),
+        )
 
 
 class ToPPOCRPageTests(unittest.TestCase):

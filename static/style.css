@@ -1778,3 +1778,19 @@ svg {
 .task-item.status-queued .task-state {
     color: #b45309;
 }
+
+.setting-number select {
+    width: 128px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    color: var(--text);
+    background: #fff;
+    font-size: 13px;
+}
+
+.setting-number select:focus {
+    outline: 2px solid var(--brand-soft);
+    border-color: var(--brand);
+}

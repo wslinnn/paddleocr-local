@@ -1,10 +1,13 @@
 import asyncio
 import base64
 import io
+import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import fitz
@@ -33,7 +36,65 @@ REC_BATCH_NUM = int(os.getenv("RAPIDOCR_REC_BATCH_NUM", "3"))
 LANG_DET = os.getenv("RAPIDOCR_LANG_DET", "ch").strip().lower()
 LANG_REC = os.getenv("RAPIDOCR_LANG_REC", "ch").strip().lower()
 
-ENGINE = None
+# --- Runtime engine settings (tier / language hot switching) ----------------
+# Settings persist to the /app/data volume so they survive container rebuilds;
+# env vars act as defaults. Engines are cached per (tier, det_lang, rec_lang)
+# key with a small LRU cap so switching back to a recent tier is instant.
+
+VALID_TIERS = ("tiny", "small", "medium")
+VALID_DET_LANGS = ("ch", "en", "multi")
+VALID_REC_LANGS = ("ch", "ch_doc", "en")
+ENGINE_CACHE_LIMIT = 3
+SETTINGS_PATH = Path(os.getenv("RAPIDOCR_SETTINGS_PATH", "/app/data/engine-settings.json"))
+
+
+def default_engine_settings() -> dict:
+    return {
+        "tier": MODEL_TIER if MODEL_TIER in VALID_TIERS else "small",
+        "det_lang": LANG_DET if LANG_DET in VALID_DET_LANGS else "ch",
+        "rec_lang": LANG_REC if LANG_REC in VALID_REC_LANGS else "ch",
+    }
+
+
+def validate_engine_settings(payload: dict) -> dict:
+    """Merge + validate a partial settings payload; raises ValueError on bad values."""
+    merged = dict(CURRENT_SETTINGS)
+    if "tier" in payload:
+        if payload["tier"] not in VALID_TIERS:
+            raise ValueError(f"tier must be one of {VALID_TIERS}")
+        merged["tier"] = payload["tier"]
+    if "det_lang" in payload:
+        if payload["det_lang"] not in VALID_DET_LANGS:
+            raise ValueError(f"det_lang must be one of {VALID_DET_LANGS}")
+        merged["det_lang"] = payload["det_lang"]
+    if "rec_lang" in payload:
+        if payload["rec_lang"] not in VALID_REC_LANGS:
+            raise ValueError(f"rec_lang must be one of {VALID_REC_LANGS}")
+        merged["rec_lang"] = payload["rec_lang"]
+    return merged
+
+
+def load_engine_settings() -> dict:
+    settings = default_engine_settings()
+    try:
+        stored = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        settings = validate_engine_settings(stored)
+    except FileNotFoundError:
+        pass
+    except Exception as error:
+        logger.warning("Ignoring invalid engine settings file %s: %s", SETTINGS_PATH, error)
+    return settings
+
+
+def save_engine_settings(settings: dict) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = SETTINGS_PATH.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(SETTINGS_PATH)
+
+
+CURRENT_SETTINGS: dict = default_engine_settings()
+ENGINE_CACHE: "OrderedDict[tuple, Any]" = OrderedDict()
 ENGINE_ERROR: str | None = None
 ENGINE_LOCK = asyncio.Lock()
 INFERENCE_LOCK = asyncio.Lock()
@@ -92,18 +153,18 @@ def build_response(pages_result: list[dict], file_type: int) -> dict[str, Any]:
     }
 
 
-def create_engine():
-    """Load the RapidOCR engine.
+def create_engine(settings: dict):
+    """Load the RapidOCR engine for the given tier/language settings.
 
-    Engine, tier, thread count and rec batch are env-configurable so the same
-    image runs on Intel (openvino) or AMD (onnxruntime) without code changes.
-    Models download lazily to the RapidOCR default location on first use.
+    Engine type, thread count and rec batch come from env (deployment-level);
+    tier and languages are runtime-switchable.
     """
     from rapidocr import RapidOCR
 
     logger.info("Loading RapidOCR (PP-OCRv6, tier=%s, engine=%s, lang=%s/%s, threads=%d, rec_batch=%d)",
-                MODEL_TIER, ENGINE_TYPE, LANG_DET, LANG_REC, NUM_THREADS, REC_BATCH_NUM)
-    return RapidOCR(params=coerce_engine_params(build_engine_params()))
+                settings["tier"], ENGINE_TYPE, settings["det_lang"], settings["rec_lang"],
+                NUM_THREADS, REC_BATCH_NUM)
+    return RapidOCR(params=coerce_engine_params(build_engine_params(settings)))
 
 
 def coerce_engine_params(raw_params: dict) -> dict:
@@ -130,21 +191,20 @@ def coerce_engine_params(raw_params: dict) -> dict:
     return params
 
 
-def build_engine_params() -> dict:
-    """Assemble RapidOCR params from env config (see create_engine for context).
+def build_engine_params(settings: dict) -> dict:
+    """Assemble RapidOCR params from env config + runtime settings.
 
     Values are plain strings — the same form the stock config.yaml uses — so
     this stays a pure function, testable without rapidocr installed.
     """
     engine_type = ENGINE_TYPE if ENGINE_TYPE in {"onnxruntime", "openvino"} else "onnxruntime"
-    model_type = MODEL_TIER if MODEL_TIER in {"tiny", "small", "medium"} else "small"
     params = {
         "Det.engine_type": engine_type,
-        "Det.model_type": model_type,
-        "Det.lang_type": LANG_DET,
+        "Det.model_type": settings["tier"],
+        "Det.lang_type": settings["det_lang"],
         "Rec.engine_type": engine_type,
-        "Rec.model_type": model_type,
-        "Rec.lang_type": LANG_REC,
+        "Rec.model_type": settings["tier"],
+        "Rec.lang_type": settings["rec_lang"],
         "Rec.rec_batch_num": REC_BATCH_NUM,
     }
     if NUM_THREADS > 0:
@@ -156,21 +216,38 @@ def build_engine_params() -> dict:
     return params
 
 
+def engine_cache_key(settings: dict) -> tuple:
+    return (settings["tier"], settings["det_lang"], settings["rec_lang"])
+
+
 async def get_engine():
-    global ENGINE, ENGINE_ERROR
-    if ENGINE is not None:
-        return ENGINE
+    """Return the engine for CURRENT_SETTINGS, building it lazily.
+
+    Callers hold INFERENCE_LOCK, so a settings change swaps the engine strictly
+    between requests — an in-flight OCR job never sees a half-reloaded engine.
+    """
+    global ENGINE_ERROR
+    key = engine_cache_key(CURRENT_SETTINGS)
+    cached = ENGINE_CACHE.get(key)
+    if cached is not None:
+        ENGINE_CACHE.move_to_end(key)
+        return cached
     async with ENGINE_LOCK:
-        if ENGINE is not None:
-            return ENGINE
+        cached = ENGINE_CACHE.get(key)
+        if cached is not None:
+            ENGINE_CACHE.move_to_end(key)
+            return cached
         ENGINE_ERROR = None
         try:
-            ENGINE = await asyncio.to_thread(create_engine)
-            return ENGINE
+            engine = await asyncio.to_thread(create_engine, dict(CURRENT_SETTINGS))
         except Exception as error:
             ENGINE_ERROR = str(error) or error.__class__.__name__
-            logger.exception("Failed to load RapidOCR")
+            logger.exception("Failed to load RapidOCR for %s", key)
             raise
+        ENGINE_CACHE[key] = engine
+        while len(ENGINE_CACHE) > ENGINE_CACHE_LIMIT:
+            ENGINE_CACHE.popitem(last=False)
+        return engine
 
 
 def render_pdf(file_bytes: bytes) -> list[Image.Image]:
@@ -253,6 +330,9 @@ def run_one(engine, image: Image.Image):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global CURRENT_SETTINGS
+    CURRENT_SETTINGS = load_engine_settings()
+    logger.info("Engine settings: %s", CURRENT_SETTINGS)
     engine = await get_engine()
     # Warm up the inference engine: the first run on a new image shape incurs
     # ~1s of onnxruntime shape inference + memory arena allocation (or OpenVINO
@@ -273,9 +353,44 @@ app = FastAPI(title="RapidOCR Adapter", version="0.1.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    if ENGINE is None:
+    if not ENGINE_CACHE:
         raise HTTPException(status_code=503, detail=ENGINE_ERROR or "RapidOCR is loading")
-    return {"status": "ok", "model": MODEL_NAME, "tier": MODEL_TIER, "modelLoaded": True}
+    return {
+        "status": "ok",
+        "tier": CURRENT_SETTINGS["tier"],
+        "det_lang": CURRENT_SETTINGS["det_lang"],
+        "rec_lang": CURRENT_SETTINGS["rec_lang"],
+        "modelLoaded": True,
+    }
+
+
+@app.get("/engine/settings")
+async def get_engine_settings():
+    return dict(CURRENT_SETTINGS)
+
+
+@app.put("/engine/settings")
+async def put_engine_settings(request: Request):
+    """Switch tier/language at runtime; persisted to the data volume.
+
+    The engine itself reloads lazily inside INFERENCE_LOCK on the next OCR
+    request, so in-flight jobs finish on the engine they started with.
+    """
+    global CURRENT_SETTINGS
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Settings payload must be an object")
+    try:
+        merged = validate_engine_settings(payload)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    save_engine_settings(merged)
+    CURRENT_SETTINGS = merged
+    logger.info("Engine settings updated: %s", merged)
+    return dict(CURRENT_SETTINGS)
 
 
 @app.post("/ocr")
@@ -287,12 +402,12 @@ async def ocr(request: Request):
     if not pages:
         raise HTTPException(status_code=400, detail="No images were produced for OCR")
     t_prep = time.perf_counter()
-    engine = await get_engine()
-    t_engine = time.perf_counter()
-    logger.debug("[timing] request: read_input %.3fs | prepare_images(%d pages) %.3fs | get_engine %.3fs",
-                t_input - t_start, len(pages), t_prep - t_input, t_engine - t_prep)
+    logger.debug("[timing] request: read_input %.3fs | prepare_images(%d pages) %.3fs",
+                t_input - t_start, len(pages), t_prep - t_input)
     pages_result = []
     async with INFERENCE_LOCK:
+        engine = await get_engine()
+        t_engine = time.perf_counter()
         for index, image in enumerate(pages):
             t_page = time.perf_counter()
             txts, scores, boxes = await asyncio.to_thread(run_one, engine, image)

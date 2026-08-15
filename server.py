@@ -3058,6 +3058,40 @@ async def proxy_rapidocr(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def call_rapidocr_settings(method: str, payload: dict | None = None) -> dict:
+    """GET/PUT the adapter's runtime engine settings (tier / OCR language)."""
+    if not ENABLE_RAPIDOCR:
+        raise HTTPException(status_code=404, detail="RapidOCR is not enabled")
+    base_url = RAPIDOCR_SERVICE_URL.rsplit("/ocr", 1)[0]
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if method == "GET":
+                resp = await client.get(f"{base_url}/engine/settings")
+            else:
+                resp = await client.put(f"{base_url}/engine/settings", json=payload)
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=503, detail=f"RapidOCR adapter unreachable: {error}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
+
+@app.get("/api/engine-settings")
+async def get_engine_settings():
+    return await call_rapidocr_settings("GET")
+
+
+@app.put("/api/engine-settings")
+async def put_engine_settings(request: Request):
+    try:
+        payload = await request.json()
+    except Exception as error:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from error
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Settings payload must be an object")
+    return await call_rapidocr_settings("PUT", payload)
+
+
 @app.post("/api/unlimited-ocr")
 async def proxy_unlimited_ocr(request: Request):
     """Proxy request to the optional Unlimited-OCR adapter service."""
