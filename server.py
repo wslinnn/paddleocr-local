@@ -2094,8 +2094,39 @@ def build_searchable_pdf(ocr_results: list) -> bytes:
     return buffer.getvalue()
 
 
+def build_docx(ocr_results: list) -> bytes:
+    """Generate an editable Word document: one paragraph per OCR line.
+
+    Word's value is reflowable editing, so lines flow as paragraphs (source
+    page breaks preserved) instead of positioned text boxes — positioning is
+    the PDF formats' job. Text source mirrors the TXT export (ocrLines first,
+    rec_texts fallback) so corrections stay in sync.
+    """
+    from docx import Document
+    from docx.enum.text import WD_BREAK
+
+    document = Document()
+    for page_index, page in enumerate(ocr_results):
+        page_dict = page if isinstance(page, dict) else {}
+        lines = page_dict.get("ocrLines")
+        if not isinstance(lines, list):
+            pruned = page_dict.get("prunedResult") or {}
+            texts = pruned.get("rec_texts") if isinstance(pruned.get("rec_texts"), list) else []
+            lines = [{"text": text} for text in texts]
+        if page_index > 0 and lines:
+            document.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+        for line in lines:
+            text = str((line if isinstance(line, dict) else {}).get("text") or "").strip()
+            if not text:
+                continue
+            document.add_paragraph(text)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
 @app.get("/api/tasks/{task_id}/export")
-async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf|searchable-pdf)$")):
+async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf|searchable-pdf|docx)$")):
     """Export a task's OCR results: reflowed PDF (text by rec_boxes) or
     searchable PDF (original page images + invisible text layer)."""
     path = task_file_path(task_id)
@@ -2109,6 +2140,13 @@ async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf|se
     ocr_results = task.get("ocrResults") or []
     if not ocr_results:
         raise HTTPException(status_code=400, detail="Task has no OCR results to export")
+    if format == "docx":
+        docx_bytes = await run_in_threadpool(build_docx, ocr_results)
+        return Response(
+            content=docx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{safe_task_id(task_id)}.docx"'},
+        )
     if format == "searchable-pdf":
         pdf_bytes = await run_in_threadpool(build_searchable_pdf, ocr_results)
         filename = f"{safe_task_id(task_id)}-searchable.pdf"

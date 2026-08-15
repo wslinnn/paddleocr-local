@@ -550,7 +550,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(pdf|searchable-pdf)$",
+              "pattern": "^(pdf|searchable-pdf|docx)$",
               "default": "pdf",
               "title": "Format"
             }

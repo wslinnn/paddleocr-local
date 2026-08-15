@@ -3939,6 +3939,7 @@ function showDownloadFormatMenu(task, anchor) {
     if (Array.isArray(task.ocrResults) && task.ocrResults.length) {
         options.push({ label: 'PDF（重排）', action: () => downloadTaskPdf(task) });
         options.push({ label: t('PDF（可搜索）'), action: () => downloadTaskSearchablePdf(task) });
+        options.push({ label: t('DOCX（可编辑）'), action: () => downloadTaskDocx(task) });
         options.push({ label: 'TXT（纯文本）', action: () => downloadTaskText(task) });
     }
     options.push({ label: 'JSON', action: () => downloadTaskJson(task) });
@@ -3975,23 +3976,27 @@ function downloadTaskJson(task) {
 }
 
 async function downloadTaskPdf(task) {
-    await downloadTaskPdfFormat(task, 'pdf');
+    await downloadTaskExport(task, 'pdf', 'pdf');
 }
 
 async function downloadTaskSearchablePdf(task) {
-    await downloadTaskPdfFormat(task, 'searchable-pdf');
+    await downloadTaskExport(task, 'searchable-pdf', 'pdf');
 }
 
-async function downloadTaskPdfFormat(task, format) {
+async function downloadTaskDocx(task) {
+    await downloadTaskExport(task, 'docx', 'docx');
+}
+
+async function downloadTaskExport(task, format, extension) {
     if (!task?.id) return;
     const response = await fetch(`/api/tasks/${encodeURIComponent(task.id)}/export?format=${format}`);
     if (!response.ok) {
         const detail = await response.text();
-        alert(detail || `PDF 导出失败 (${response.status})`);
+        alert(detail || t('导出失败') + ` (${response.status})`);
         return;
     }
     const blob = await response.blob();
-    downloadBlob(blob, safeDownloadName(task.name, 'pdf'));
+    downloadBlob(blob, safeDownloadName(task.name, extension));
 }
 
 function downloadTaskText(task) {

@@ -1186,6 +1186,30 @@ class ServerTaskApiTests(unittest.TestCase):
         response = self.client.get("/api/tasks/export3/export?format=searchable-pdf")
         self.assertEqual(response.status_code, 400)
 
+    def test_export_task_returns_docx(self):
+        from docx import Document
+
+        task = {
+            "id": "export4", "name": "x.pdf", "sourceKind": "pdf",
+            "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 1,
+            "createdAt": 1, "updatedAt": 1, "status": "completed",
+            "ocrResults": [
+                {"ocrLines": [{"text": "第一页标题"}, {"text": "第一页正文"}]},
+                {"ocrLines": [{"text": "第二页内容"}]},
+            ],
+        }
+        self.client.put("/api/tasks/export4", json=task)
+        response = self.client.get("/api/tasks/export4/export?format=docx")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            response.headers["content-type"],
+        )
+
+        document = Document(io.BytesIO(response.content))
+        texts = [p.text for p in document.paragraphs if p.text.strip()]
+        self.assertEqual(texts, ["第一页标题", "第一页正文", "第二页内容"])
+
     @staticmethod
     def _sfnt_bytes(num_tables: int, tags: list) -> bytes:
         header = b"\x00\x01\x00\x00" + num_tables.to_bytes(2, "big") + b"\x00" * 6
