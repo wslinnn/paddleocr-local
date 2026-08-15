@@ -1150,10 +1150,13 @@ async def schedule_unlimited_ocr_backend_activation(backend: str) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global TASK_WORKER
     ensure_task_data_dir()
     if model_control_available():
         await schedule_model_runtime_activation(DEFAULT_RUNTIME_MODEL_ID)
+    TASK_WORKER = asyncio.create_task(task_worker_loop())
     yield
+    TASK_WORKER.cancel()
 
 
 app = FastAPI(
@@ -2012,6 +2015,259 @@ async def cleanup_tasks(request: TaskCleanupRequest):
         return {"deleted": deleted, "freedBytes": freed}
 
     return await run_in_threadpool(run_cleanup)
+
+
+# --- Background task queue (P1-1) -------------------------------------------
+# The browser used to orchestrate OCR synchronously (one blocking request per
+# batch, minutes-long), which fought gateway timeouts and made progress/
+# cancellation/batch-uploads impossible. Orchestration now lives here: a strict
+# FIFO queue with a single worker loop. Jobs reuse the task store — every
+# completed batch is persisted, so a restart just leaves pending batches for
+# the existing resume flow. Unlimited-OCR keeps its SSE streaming path.
+
+TASK_QUEUE: asyncio.Queue = asyncio.Queue()
+TASK_JOBS: dict[str, dict] = {}
+TASK_WORKER: asyncio.Task | None = None
+TASK_MODEL_IDS = {"pp-ocrv6-rapid", "pp-ocrv6", "ovisocr2"}
+OCR_REQUEST_SETTING_FIELDS = {
+    "useLayoutDetection",
+    "useDocOrientationClassify",
+    "useDocUnwarping",
+    "useTextlineOrientation",
+    "useChartRecognition",
+    "useSealRecognition",
+    "formatBlockContent",
+    "showFormulaNumber",
+    "markdownIgnoreLabels",
+}
+
+
+def task_model_runner(model_id: str):
+    return {
+        "pp-ocrv6-rapid": run_rapidocr_request,
+        "pp-ocrv6": run_ppocrv6_request,
+        "ovisocr2": run_ovisocr2_request,
+    }.get(model_id)
+
+
+def ensure_task_job(task_id: str) -> dict:
+    job = TASK_JOBS.get(task_id)
+    if job is None:
+        job = {
+            "state": "idle",
+            "cancel": asyncio.Event(),
+            "batchesDone": 0,
+            "batchesTotal": 0,
+            "currentBatch": "",
+            "resultsCount": 0,
+            "error": "",
+            "batchDurations": [],
+        }
+        TASK_JOBS[task_id] = job
+    return job
+
+
+def enqueue_task_processing(task_id: str, task: dict) -> dict:
+    job = ensure_task_job(task_id)
+    if job["state"] in ("queued", "processing"):
+        return {"state": job["state"], "queued": False}
+    job.update({
+        "state": "queued",
+        "cancel": asyncio.Event(),
+        "error": "",
+        "batchDurations": [],
+    })
+    pending = [b for b in (task.get("batches") or []) if b.get("status") == "pending"]
+    job["batchesTotal"] = len(pending)
+    job["batchesDone"] = 0
+    job["currentBatch"] = ""
+    job["resultsCount"] = len(task.get("ocrResults") or [])
+    # Lazy-start the worker (lifespan also starts one; the done-check makes
+    # this safe if the app is served without lifespan, e.g. under tests).
+    global TASK_WORKER
+    if TASK_WORKER is None or TASK_WORKER.done():
+        TASK_WORKER = asyncio.create_task(task_worker_loop())
+    TASK_QUEUE.put_nowait(task_id)
+    ahead = sum(1 for entry in TASK_JOBS.values() if entry["state"] == "queued" and entry is not job)
+    return {"state": job["state"], "queued": True, "ahead": ahead, "batchesTotal": job["batchesTotal"]}
+
+
+def task_job_status(task_id: str) -> dict | None:
+    job = TASK_JOBS.get(task_id)
+    if job is None:
+        return None
+    durations = job["batchDurations"]
+    remaining = max(0, job["batchesTotal"] - job["batchesDone"])
+    eta = (sum(durations) / len(durations)) * remaining if durations and job["state"] == "processing" else None
+    return {
+        "state": job["state"],
+        "batchesDone": job["batchesDone"],
+        "batchesTotal": job["batchesTotal"],
+        "currentBatch": job["currentBatch"],
+        "resultsCount": job["resultsCount"],
+        "etaSeconds": round(eta, 1) if eta is not None else None,
+        "error": job["error"] or None,
+    }
+
+
+async def task_worker_loop() -> None:
+    while True:
+        task_id = await TASK_QUEUE.get()
+        try:
+            await run_task_job(task_id)
+        except Exception as error:
+            logger.exception("Task job %s crashed", task_id)
+            job = TASK_JOBS.get(task_id)
+            if job:
+                job["state"] = "error"
+                job["error"] = str(error) or error.__class__.__name__
+        finally:
+            TASK_QUEUE.task_done()
+
+
+def build_job_batch_payload(task_id: str, task: dict, batch: dict) -> tuple[bytes, int]:
+    """Bytes + fileType for one batch, mirroring the browser's payload logic."""
+    file_type = int(batch.get("fileType", 1))
+    source_path = task_source_path(task_id)
+    if not source_path.exists():
+        raise RuntimeError(f"Task source missing: {task_id}")
+    raw = source_path.read_bytes()
+    if file_type == 0 and int(task.get("pageCount") or 1) > 1:
+        start = int(batch.get("startPage") or 1)
+        end = int(batch.get("endPage") or start)
+        raw = extract_pdf_pages(source_path, start, end)
+    return raw, file_type
+
+
+async def run_task_job(task_id: str) -> None:
+    job = ensure_task_job(task_id)
+    if job["cancel"].is_set():
+        job["state"] = "cancelled"
+        return
+
+    path = task_file_path(task_id)
+    task = hydrate_task_detail(task_id, await run_in_threadpool(read_task_file, path))
+    model_id = task.get("modelId") or ""
+    runner = task_model_runner(model_id)
+    if runner is None:
+        job["state"] = "error"
+        job["error"] = f"Model {model_id} does not support background processing"
+        return
+
+    settings = {k: v for k, v in (task.get("parseSettings") or {}).items() if k in OCR_REQUEST_SETTING_FIELDS}
+    pending = [b for b in (task.get("batches") or []) if b.get("status") == "pending"]
+    job["state"] = "processing"
+    job["batchesTotal"] = len(pending) + sum(1 for b in (task.get("batches") or []) if b.get("status") == "completed")
+    task["status"] = "processing"
+    task.setdefault("ocrResults", [])
+    task.setdefault("images", {})
+    await run_in_threadpool(write_task_bundle, task_id, task)
+
+    for batch in [b for b in (task.get("batches") or []) if b.get("status") == "pending"]:
+        if job["cancel"].is_set():
+            break
+        started = time.perf_counter()
+        batch["status"] = "processing"
+        job["currentBatch"] = str(batch.get("label") or batch.get("id") or "")
+        await run_in_threadpool(write_task_bundle, task_id, task)
+        try:
+            raw, file_type = await run_in_threadpool(build_job_batch_payload, task_id, task, batch)
+            ocr_request = OCRRequest(fileType=file_type, **settings)
+            result = await runner(ocr_request, raw)
+        except Exception as error:
+            batch["status"] = "error"
+            batch["error"] = str(error) or error.__class__.__name__
+            task["status"] = "error"
+            task["error"] = batch["error"]
+            await run_in_threadpool(write_task_bundle, task_id, task)
+            job["state"] = "error"
+            job["error"] = batch["error"]
+            return
+
+        pages = result.get("layoutParsingResults") or []
+        for page_index, page in enumerate(pages):
+            page["batchId"] = batch.get("id")
+            page["sourcePage"] = int(batch.get("startPage") or 1) + page_index
+            task["ocrResults"].append(page)
+        batch_markdown = result.get("markdown") or ""
+        batch["status"] = "completed"
+        batch["markdown"] = batch_markdown
+        if batch_markdown:
+            task["markdown"] = "\n\n".join(part for part in (task.get("markdown"), batch_markdown) if part)
+        task["images"].update(result.get("images") or {})
+        task["updatedAt"] = int(time.time() * 1000)
+
+        job["batchesDone"] += 1
+        job["resultsCount"] = len(task["ocrResults"])
+        job["batchDurations"].append(time.perf_counter() - started)
+        await run_in_threadpool(write_task_bundle, task_id, task)
+
+    if job["cancel"].is_set():
+        for batch in task.get("batches") or []:
+            if batch.get("status") == "processing":
+                batch["status"] = "pending"
+        task["status"] = "pending"
+        await run_in_threadpool(write_task_bundle, task_id, task)
+        job["state"] = "cancelled"
+        return
+
+    task["status"] = "completed"
+    task["error"] = None
+    await run_in_threadpool(write_task_bundle, task_id, task)
+    # Terminal job states flip only after the disk agrees — the status
+    # endpoint must never advertise a terminal state ahead of task.json.
+    job["state"] = "completed"
+    job["currentBatch"] = ""
+
+
+@app.post("/api/tasks/{task_id}/process")
+async def process_task_endpoint(task_id: str):
+    """Enqueue background processing of a task's pending batches (FIFO)."""
+    path = task_file_path(task_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Task not found")
+    task = hydrate_task_detail(task_id, await run_in_threadpool(read_task_file, path))
+    if task.get("modelId") not in TASK_MODEL_IDS:
+        raise HTTPException(status_code=400, detail="This model does not support background processing")
+    pending = [b for b in (task.get("batches") or []) if b.get("status") == "pending"]
+    if not pending:
+        job = ensure_task_job(task_id)
+        job["state"] = "completed"
+        return {"queued": False, "state": "completed", "batchesTotal": 0}
+    info = enqueue_task_processing(task_id, task)
+    return {
+        "queued": info["queued"],
+        "state": info["state"],
+        "ahead": info.get("ahead", 0),
+        "batchesTotal": info.get("batchesTotal", 0),
+    }
+
+
+@app.get("/api/tasks/{task_id}/status")
+async def task_status_endpoint(task_id: str):
+    """Compact progress for a background job (poll ~1.5s)."""
+    status = task_job_status(task_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="No job for this task")
+    path = task_file_path(task_id)
+    if path.exists():
+        stored = await run_in_threadpool(read_task_file, path)
+        batches = stored.get("batches") or []
+        status["batches"] = [
+            {"id": b.get("id"), "status": b.get("status"), "label": b.get("label", "")}
+            for b in batches
+        ]
+    return status
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def task_cancel_endpoint(task_id: str):
+    """Cancel a queued or processing job (between batches)."""
+    job = TASK_JOBS.get(task_id)
+    if job is None or job["state"] not in ("queued", "processing"):
+        return {"ok": False, "state": job["state"] if job else "idle"}
+    job["cancel"].set()
+    return {"ok": True, "state": job["state"]}
 
 
 @app.post("/api/convert/to-pdf")

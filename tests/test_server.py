@@ -23,9 +23,11 @@ class ServerTaskApiTests(unittest.TestCase):
         os.environ["PANDOCR_API_TOKEN"] = ""
         cls.server = importlib.import_module("server")
         cls.client = TestClient(cls.server.app)
+        cls.client.__enter__()
 
     @classmethod
     def tearDownClass(cls):
+        cls.client.__exit__(None, None, None)
         cls.temp_dir.cleanup()
 
     def test_task_list_returns_summaries_and_detail_endpoint_returns_full_task(self):
@@ -796,6 +798,133 @@ class ServerTaskApiTests(unittest.TestCase):
     def test_cleanup_requires_parameters(self):
         response = self.client.post("/api/tasks/cleanup", json={})
         self.assertEqual(response.status_code, 400)
+
+    def _put_queued_task(self, task_id, model_id="pp-ocrv6-rapid", batch_count=2):
+        batches = [
+            {
+                "id": f"{task_id}-b{index}",
+                "label": f"第 {index + 1} 页",
+                "fileType": 1,
+                "startPage": index + 1,
+                "endPage": index + 1,
+                "pageCount": 1,
+                "status": "pending",
+            }
+            for index in range(batch_count)
+        ]
+        task = {
+            "id": task_id, "name": "x.png", "sourceKind": "image",
+            "modelId": model_id, "modelName": "Rapid", "size": 10,
+            "createdAt": 1, "updatedAt": 1, "status": "pending",
+            "pageCount": batch_count, "batches": batches,
+            "markdown": "", "images": {}, "ocrResults": [],
+        }
+        self.client.put(f"/api/tasks/{task_id}", json=task)
+        self.client.post(
+            f"/api/tasks/{task_id}/source",
+            files={"file": ("x.png", b"\x89PNG-fake-bytes", "image/png")},
+        )
+
+    @staticmethod
+    def _fake_ocr_result(page_text):
+        return {
+            "markdown": page_text,
+            "images": {},
+            "layoutParsingResults": [
+                {
+                    "parser": "pp-ocrv6-rapid",
+                    "page_index": 0,
+                    "markdown": {"text": page_text, "images": {}},
+                    "ocrLines": [{"text": page_text, "score": 0.9}],
+                }
+            ],
+        }
+
+    def _poll_status(self, task_id, expected_states, timeout=5.0):
+        import time as time_module
+        deadline = time_module.time() + timeout
+        while time_module.time() < deadline:
+            response = self.client.get(f"/api/tasks/{task_id}/status")
+            if response.status_code == 200:
+                status = response.json()
+                if status["state"] in expected_states:
+                    return status
+            time_module.sleep(0.05)
+        self.fail(f"Task {task_id} never reached {expected_states}")
+
+    def test_task_queue_processes_batches_and_persists_results(self):
+        async def fake_runner(ocr_request, raw):
+            return self._fake_ocr_result("hello")
+
+        self._put_queued_task("taskq10001")
+        with patch.object(self.server, "task_model_runner", return_value=fake_runner):
+            enqueue = self.client.post("/api/tasks/taskq10001/process")
+            self.assertEqual(enqueue.status_code, 200)
+            self.assertTrue(enqueue.json()["queued"])
+
+            status = self._poll_status("taskq10001", {"completed"})
+            self.assertEqual(status["batchesDone"], 2)
+            self.assertEqual(status["batchesTotal"], 2)
+
+        detail = self.client.get("/api/tasks/taskq10001").json()
+        self.assertEqual(detail["status"], "completed")
+        self.assertEqual(len(detail["ocrResults"]), 2)
+        self.assertEqual(detail["ocrResults"][0]["sourcePage"], 1)
+        self.assertEqual(detail["ocrResults"][1]["sourcePage"], 2)
+        self.assertEqual(detail["ocrResults"][0]["batchId"], "taskq10001-b0")
+        self.assertEqual(detail["markdown"], "hello\n\nhello")
+
+    def test_task_queue_cancel_between_batches(self):
+        import asyncio as asyncio_module
+
+        started = asyncio_module.Event()
+
+        async def slow_runner(ocr_request, raw):
+            started.set()
+            await asyncio_module.sleep(0.25)
+            return self._fake_ocr_result("page")
+
+        self._put_queued_task("taskq20002")
+        with patch.object(self.server, "task_model_runner", return_value=slow_runner):
+            self.client.post("/api/tasks/taskq20002/process")
+            status = self._poll_status("taskq20002", {"processing"})
+            self.assertTrue(status["batchesTotal"] >= 1)
+
+            cancel = self.client.post("/api/tasks/taskq20002/cancel")
+            self.assertTrue(cancel.json()["ok"])
+
+            status = self._poll_status("taskq20002", {"cancelled", "completed"})
+            self.assertEqual(status["state"], "cancelled")
+
+        detail = self.client.get("/api/tasks/taskq20002").json()
+        # Cancellation lands between batches: whatever hadn't started stays
+        # pending (resumable); nothing is left mid-flight.
+        processing = [b for b in detail["batches"] if b["status"] == "processing"]
+        self.assertEqual(len(processing), 0)
+        self.assertEqual(detail["status"], "pending")
+
+    def test_task_queue_rejects_unsupported_model(self):
+        self._put_queued_task("taskq30003", model_id="paddleocr-vl-1.6")
+        response = self.client.post("/api/tasks/taskq30003/process")
+        self.assertEqual(response.status_code, 400)
+
+    def test_task_queue_process_is_idempotent(self):
+        gate = {"open": False}
+
+        async def gated_runner(ocr_request, raw):
+            while not gate["open"]:
+                await asyncio.sleep(0.02)
+            return self._fake_ocr_result("page")
+
+        self._put_queued_task("taskq40004")
+        with patch.object(self.server, "task_model_runner", return_value=gated_runner):
+            first = self.client.post("/api/tasks/taskq40004/process")
+            second = self.client.post("/api/tasks/taskq40004/process")
+            self.assertTrue(first.json()["queued"])
+            self.assertFalse(second.json()["queued"])
+            gate["open"] = True
+            self._poll_status("taskq40004", {"completed"})
+        self.server.TASK_JOBS.pop("taskq40004", None)
 
     def test_build_relaid_pdf_positions_text_by_boxes(self):
         ocr_results = [{
