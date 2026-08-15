@@ -2029,6 +2029,9 @@ TASK_QUEUE: asyncio.Queue = asyncio.Queue()
 TASK_JOBS: dict[str, dict] = {}
 TASK_WORKER: asyncio.Task | None = None
 TASK_MODEL_IDS = {"pp-ocrv6-rapid", "pp-ocrv6", "ovisocr2"}
+# Per-batch watchdog: a batch stuck longer than this is failed and the queue
+# moves on (0 disables). Default 15 min — generous for any sane batch size.
+JOB_BATCH_TIMEOUT = float(os.getenv("PANDOCR_JOB_BATCH_TIMEOUT", "900"))
 OCR_REQUEST_SETTING_FIELDS = {
     "useLayoutDetection",
     "useDocOrientationClassify",
@@ -2056,6 +2059,7 @@ def ensure_task_job(task_id: str) -> dict:
         job = {
             "state": "idle",
             "cancel": asyncio.Event(),
+            "runner_task": None,
             "batchesDone": 0,
             "batchesTotal": 0,
             "currentBatch": "",
@@ -2074,6 +2078,7 @@ def enqueue_task_processing(task_id: str, task: dict) -> dict:
     job.update({
         "state": "queued",
         "cancel": asyncio.Event(),
+        "runner_task": None,
         "error": "",
         "batchDurations": [],
     })
@@ -2113,15 +2118,26 @@ def task_job_status(task_id: str) -> dict | None:
 async def task_worker_loop() -> None:
     while True:
         task_id = await TASK_QUEUE.get()
+        job = ensure_task_job(task_id)
+        # Each job runs as its own task so cancellation preempts a job stuck
+        # mid-batch instead of waiting for a between-batch checkpoint.
+        job_run = asyncio.create_task(run_task_job(task_id))
+        job["runner_task"] = job_run
         try:
-            await run_task_job(task_id)
+            await job_run
+        except asyncio.CancelledError:
+            if job_run.cancelled():
+                # The job itself was cancelled via the API; the loop lives on.
+                logger.info("Task job %s was cancelled mid-flight", task_id)
+                job["state"] = "cancelled"
+            else:
+                raise
         except Exception as error:
             logger.exception("Task job %s crashed", task_id)
-            job = TASK_JOBS.get(task_id)
-            if job:
-                job["state"] = "error"
-                job["error"] = str(error) or error.__class__.__name__
+            job["state"] = "error"
+            job["error"] = str(error) or error.__class__.__name__
         finally:
+            job["runner_task"] = None
             TASK_QUEUE.task_done()
 
 
@@ -2156,6 +2172,8 @@ async def run_task_job(task_id: str) -> None:
 
     settings = {k: v for k, v in (task.get("parseSettings") or {}).items() if k in OCR_REQUEST_SETTING_FIELDS}
     pending = [b for b in (task.get("batches") or []) if b.get("status") == "pending"]
+    logger.info("Task job %s picked up (model=%s, %d pending batches)", task_id, model_id, len(pending))
+    job_started = time.perf_counter()
     job["state"] = "processing"
     job["batchesTotal"] = len(pending) + sum(1 for b in (task.get("batches") or []) if b.get("status") == "completed")
     task["status"] = "processing"
@@ -2167,40 +2185,58 @@ async def run_task_job(task_id: str) -> None:
         if job["cancel"].is_set():
             break
         started = time.perf_counter()
-        batch["status"] = "processing"
         job["currentBatch"] = str(batch.get("label") or batch.get("id") or "")
-        await run_in_threadpool(write_task_bundle, task_id, task)
         try:
+            batch["status"] = "processing"
+            await run_in_threadpool(write_task_bundle, task_id, task)
+            logger.info("Task job %s batch '%s' started", task_id, job["currentBatch"])
             raw, file_type = await run_in_threadpool(build_job_batch_payload, task_id, task, batch)
             ocr_request = OCRRequest(fileType=file_type, **settings)
-            result = await runner(ocr_request, raw)
+            if JOB_BATCH_TIMEOUT > 0:
+                result = await asyncio.wait_for(runner(ocr_request, raw), timeout=JOB_BATCH_TIMEOUT)
+            else:
+                result = await runner(ocr_request, raw)
+
+            pages = result.get("layoutParsingResults") or []
+            for page_index, page in enumerate(pages):
+                page["batchId"] = batch.get("id")
+                page["sourcePage"] = int(batch.get("startPage") or 1) + page_index
+                task["ocrResults"].append(page)
+            batch_markdown = result.get("markdown") or ""
+            batch["status"] = "completed"
+            batch["markdown"] = batch_markdown
+            if batch_markdown:
+                task["markdown"] = "\n\n".join(part for part in (task.get("markdown"), batch_markdown) if part)
+            task["images"].update(result.get("images") or {})
+            task["updatedAt"] = int(time.time() * 1000)
+            job["batchesDone"] += 1
+            job["resultsCount"] = len(task["ocrResults"])
+            job["batchDurations"].append(time.perf_counter() - started)
+            await run_in_threadpool(write_task_bundle, task_id, task)
+        except asyncio.CancelledError:
+            # Preemptive cancellation landed somewhere inside this batch's
+            # lifecycle (including the disk writes): restore the resumable
+            # state, then let the cancellation propagate to the worker loop.
+            for restore in task.get("batches") or []:
+                if restore.get("status") == "processing":
+                    restore["status"] = "pending"
+            task["status"] = "pending"
+            await run_in_threadpool(write_task_bundle, task_id, task)
+            raise
         except Exception as error:
+            if isinstance(error, asyncio.TimeoutError):
+                batch["error"] = f"Batch timed out after {JOB_BATCH_TIMEOUT:.0f}s"
+            else:
+                batch["error"] = str(error) or error.__class__.__name__
             batch["status"] = "error"
-            batch["error"] = str(error) or error.__class__.__name__
             task["status"] = "error"
             task["error"] = batch["error"]
             await run_in_threadpool(write_task_bundle, task_id, task)
             job["state"] = "error"
             job["error"] = batch["error"]
+            logger.error("Task job %s failed on batch '%s': %s", task_id, job["currentBatch"], batch["error"])
             return
-
-        pages = result.get("layoutParsingResults") or []
-        for page_index, page in enumerate(pages):
-            page["batchId"] = batch.get("id")
-            page["sourcePage"] = int(batch.get("startPage") or 1) + page_index
-            task["ocrResults"].append(page)
-        batch_markdown = result.get("markdown") or ""
-        batch["status"] = "completed"
-        batch["markdown"] = batch_markdown
-        if batch_markdown:
-            task["markdown"] = "\n\n".join(part for part in (task.get("markdown"), batch_markdown) if part)
-        task["images"].update(result.get("images") or {})
-        task["updatedAt"] = int(time.time() * 1000)
-
-        job["batchesDone"] += 1
-        job["resultsCount"] = len(task["ocrResults"])
-        job["batchDurations"].append(time.perf_counter() - started)
-        await run_in_threadpool(write_task_bundle, task_id, task)
+        logger.info("Task job %s batch '%s' completed in %.1fs", task_id, job["currentBatch"], time.perf_counter() - started)
 
     if job["cancel"].is_set():
         for batch in task.get("batches") or []:
@@ -2209,6 +2245,7 @@ async def run_task_job(task_id: str) -> None:
         task["status"] = "pending"
         await run_in_threadpool(write_task_bundle, task_id, task)
         job["state"] = "cancelled"
+        logger.info("Task job %s cancelled between batches", task_id)
         return
 
     task["status"] = "completed"
@@ -2218,6 +2255,8 @@ async def run_task_job(task_id: str) -> None:
     # endpoint must never advertise a terminal state ahead of task.json.
     job["state"] = "completed"
     job["currentBatch"] = ""
+    logger.info("Task job %s completed (%d/%d batches, %.1fs total)",
+                task_id, job["batchesDone"], job["batchesTotal"], time.perf_counter() - job_started)
 
 
 @app.post("/api/tasks/{task_id}/process")
@@ -2278,6 +2317,9 @@ async def task_cancel_endpoint(task_id: str):
     if job is None or job["state"] not in ("queued", "processing"):
         return {"ok": False, "state": job["state"] if job else "idle"}
     job["cancel"].set()
+    runner_task = job.get("runner_task")
+    if runner_task is not None and not runner_task.done():
+        runner_task.cancel()
     return {"ok": True, "state": job["state"]}
 
 

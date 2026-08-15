@@ -951,6 +951,66 @@ class ServerTaskApiTests(unittest.TestCase):
             response = self.client.get("/api/engine-settings")
             self.assertEqual(response.status_code, 404)
 
+    def test_task_queue_batch_timeout_frees_the_queue(self):
+        # Deterministic: the FIRST runner call sticks (task A's first batch),
+        # every later call returns instantly.
+        calls = {"count": 0}
+
+        async def runner(ocr_request, raw):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                await asyncio.sleep(5)
+            return self._fake_ocr_result("page")
+
+        self._put_queued_task("taskq60006")
+        self._put_queued_task("taskq60007")
+        with patch.object(self.server, "JOB_BATCH_TIMEOUT", 0.3), \
+             patch.object(self.server, "task_model_runner", lambda mid: runner):
+            self.client.post("/api/tasks/taskq60006/process")
+            self.client.post("/api/tasks/taskq60007/process")
+            status_a = self._poll_status("taskq60006", {"error"}, timeout=10)
+            self.assertIn("timed out", status_a["error"])
+            status_b = self._poll_status("taskq60007", {"completed", "error"}, timeout=10)
+            self.assertEqual(status_b["state"], "completed")
+
+    def test_task_queue_cancel_preempts_and_worker_survives(self):
+        gate = {"open": False}
+
+        async def gated_runner(ocr_request, raw):
+            while not gate["open"]:
+                await asyncio.sleep(0.02)
+            return self._fake_ocr_result("page")
+
+        async def fast_runner(ocr_request, raw):
+            return self._fake_ocr_result("fast")
+
+        runners = {"current": gated_runner}
+        self._put_queued_task("taskq70008")
+        self._put_queued_task("taskq70009")
+        with patch.object(self.server, "task_model_runner", lambda mid: runners["current"]):
+            self.client.post("/api/tasks/taskq70008/process")
+            self._poll_status("taskq70008", {"processing"})
+            self.client.post("/api/tasks/taskq70009/process")
+
+            # Cancel the mid-batch head job — must land within ~1s, not after
+            # the gate opens.
+            import time as time_module
+            cancel_started = time_module.time()
+            cancel = self.client.post("/api/tasks/taskq70008/cancel")
+            self.assertTrue(cancel.json()["ok"])
+            status_a = self._poll_status("taskq70008", {"cancelled"}, timeout=3)
+            self.assertLess(time_module.time() - cancel_started, 3)
+
+            detail = self.client.get("/api/tasks/taskq70008").json()
+            self.assertEqual(detail["status"], "pending")
+            self.assertFalse([b for b in detail["batches"] if b["status"] == "processing"])
+
+            # The worker must still be alive: a fresh fast job completes.
+            gate["open"] = True
+            runners["current"] = fast_runner
+            status_b = self._poll_status("taskq70009", {"completed"}, timeout=10)
+            self.assertEqual(status_b["state"], "completed")
+
     def test_task_status_reconciles_stale_queued_job_against_disk(self):
         async def fake_runner(ocr_request, raw):
             return self._fake_ocr_result("page")
