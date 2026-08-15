@@ -1,3 +1,21 @@
+# API 说明
+
+## 本仓库扩展 API（后台任务队列）
+
+WebUI 的解析任务走服务端 FIFO 后台队列（text-OCR 模型）：
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/tasks/{id}/process` | POST | 将任务的待处理批次入队（幂等），返回排队位置与批次总数 |
+| `/api/tasks/{id}/status` | GET | 轮询进度（~1.5s）：状态、已完成批次、当前批次、ETA、每批状态 |
+| `/api/tasks/{id}/cancel` | POST | 批间取消；未开始的批次保持可恢复 |
+
+另有任务源文件上传、分页读取、存储统计与清理等任务管理端点。完整端点以运行时 schema 为准：设置 `PANDOCR_ENABLE_API_DOCS=1` 后访问 `/docs`，或直接读取 `/api/openapi.json`。
+
+> 以下为继承自上游的原始 API 参考文档。
+
+---
+
 以下是服务化部署的 API 参考与多语言服务调用示例：
 
 <details open=""><summary>API 参考</summary>

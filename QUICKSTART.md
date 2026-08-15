@@ -88,7 +88,7 @@ NVIDIA 用户继续使用下面的 Docker 流程。
 .\windows-one-click.bat -GpuId 1
 ```
 
-直接指定 OvisOCR2，或部署四个模型但首次启动 OvisOCR2：
+直接指定 OvisOCR2，或部署五个模型但首次启动 OvisOCR2：
 
 ```powershell
 .\windows-one-click.bat -Model ovisocr2
