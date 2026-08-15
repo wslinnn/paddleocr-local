@@ -1186,6 +1186,43 @@ class ServerTaskApiTests(unittest.TestCase):
         response = self.client.get("/api/tasks/export3/export?format=searchable-pdf")
         self.assertEqual(response.status_code, 400)
 
+    @staticmethod
+    def _sfnt_bytes(num_tables: int, tags: list) -> bytes:
+        header = b"\x00\x01\x00\x00" + num_tables.to_bytes(2, "big") + b"\x00" * 6
+        records = b"".join(tag + b"\x00" * 12 for tag in tags)
+        return header + records
+
+    def _write_font_file(self, name: str, data: bytes) -> str:
+        path = Path(self.temp_dir.name) / name
+        path.write_bytes(data)
+        return str(path)
+
+    def test_font_is_glyf_detects_outline_flavor(self):
+        font_is_glyf = self.server.font_is_glyf
+
+        # Plain sfnt with a glyf table.
+        glyf_path = self._write_font_file("plain_glyf", self._sfnt_bytes(1, [b"glyf"]))
+        self.assertTrue(font_is_glyf(glyf_path))
+
+        # OTTO/CFF flavor.
+        cff_path = self._write_font_file("cff", self._sfnt_bytes(2, [b"CFF ", b"maxp"]))
+        self.assertFalse(font_is_glyf(cff_path))
+
+        # Collection whose first face is glyf: ttcf + version + numFonts +
+        # one offset (16) + the inner sfnt at byte 16.
+        inner = self._sfnt_bytes(1, [b"glyf"])
+        ttc = b"ttcf" + b"\x00" * 4 + (1).to_bytes(4, "big") + (16).to_bytes(4, "big") + inner
+        ttc_path = self._write_font_file("coll.ttc", ttc)
+        self.assertTrue(font_is_glyf(ttc_path))
+
+        # Collection whose first face is CFF.
+        inner_cff = self._sfnt_bytes(1, [b"CFF "])
+        ttc_cff = b"ttcf" + b"\x00" * 4 + (1).to_bytes(4, "big") + (16).to_bytes(4, "big") + inner_cff
+        ttc_cff_path = self._write_font_file("coll_cff.ttc", ttc_cff)
+        self.assertFalse(font_is_glyf(ttc_cff_path))
+
+        self.assertFalse(font_is_glyf(str(Path(self.temp_dir.name) / "missing.ttf")))
+
 
 if __name__ == "__main__":
     unittest.main()

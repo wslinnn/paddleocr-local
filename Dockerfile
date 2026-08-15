@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-common \
     default-jre \
     fonts-noto-cjk \
+    fonts-wqy-microhei \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

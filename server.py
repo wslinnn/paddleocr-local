@@ -1873,7 +1873,13 @@ async def get_task(task_id: str):
     return task
 
 
-NOTO_CJK_FONT_CANDIDATES = (
+CJK_FONT_CANDIDATES = (
+    # WenQuanYi first: glyf (TrueType) outlines subset cleanly with fontTools
+    # AND re-parse in MuPDF. Noto CJK is CFF — fontTools subsetting of it makes
+    # MuPDF choke ("Reserved charstring byte"), silently aborting the subset
+    # and shipping the full ~20MB font. Verified: glyf ttc 12.4MB→40KB.
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansSC-Regular.otf",
@@ -1897,17 +1903,53 @@ def subset_document_fonts(doc) -> None:
         logger.warning("subset_fonts failed; PDF will embed the full font")
 
 
-def find_cjk_font() -> str | None:
-    """Locate an installed Noto CJK font for embedding.
+def font_is_glyf(path: str) -> bool:
+    """True for TrueType-outline (glyf) fonts — the subsetting-safe flavor.
 
-    Noto Sans CJK is pan-CJK: every index contains Simplified Chinese glyphs,
-    so the collection's first face renders SC correctly. Embedding it makes the
-    PDF self-contained (any viewer renders identically) instead of relying on
-    the viewer's local CJK fonts like the non-embedded 'china-s' does.
+    Reads the sfnt/ttc table directory directly; CFF ('OTTO') fonts return
+    False so callers can prefer glyf when both are installed.
     """
-    for path in NOTO_CJK_FONT_CANDIDATES:
-        if os.path.exists(path):
-            return path
+    def sfnt_has_glyf(data: bytes, offset: int) -> bool:
+        num_tables = int.from_bytes(data[offset + 4:offset + 6], "big")
+        for index in range(num_tables):
+            record = offset + 12 + 16 * index
+            tag = data[record:record + 4]
+            if tag == b"glyf":
+                return True
+            if tag == b"CFF ":
+                return False
+        return False
+
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return False
+    if data[:4] == b"ttcf":
+        num_fonts = int.from_bytes(data[8:12], "big")
+        if not num_fonts:
+            return False
+        return sfnt_has_glyf(data, int.from_bytes(data[12:16], "big"))
+    return sfnt_has_glyf(data, 0)
+
+
+def find_cjk_font() -> str | None:
+    """Locate an installed CJK font for embedding, preferring glyf outlines.
+
+    Glyf fonts subset cleanly (fontTools + MuPDF both happy); CFF Noto CJK
+    is kept only as a fallback because subsetting it makes MuPDF reject the
+    font, silently embedding the full ~20MB collection instead. Pan-CJK
+    faces render Simplified Chinese correctly; embedding keeps the PDF
+    self-contained instead of relying on the viewer's local CJK fonts.
+    """
+    glyf_candidates = []
+    cff_candidates = []
+    for path in CJK_FONT_CANDIDATES:
+        if not os.path.exists(path):
+            continue
+        (glyf_candidates if font_is_glyf(path) else cff_candidates).append(path)
+    if glyf_candidates:
+        return glyf_candidates[0]
+    return cff_candidates[0] if cff_candidates else None
     return None
 
 
