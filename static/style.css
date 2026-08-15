@@ -1794,3 +1794,104 @@ svg {
     outline: 2px solid var(--brand-soft);
     border-color: var(--brand);
 }
+
+.task-queue-section {
+    margin: 0 10px 10px;
+    border: 1px solid rgba(49, 91, 255, 0.35);
+    border-radius: 8px;
+    background: #f5f8ff;
+    overflow: hidden;
+}
+
+.task-queue-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--brand);
+    border-bottom: 1px solid rgba(49, 91, 255, 0.2);
+}
+
+.task-queue-master {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--brand);
+    cursor: pointer;
+}
+
+.task-queue-master:hover {
+    background: rgba(49, 91, 255, 0.12);
+}
+
+.task-queue-master svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+}
+
+.task-queue-master svg path[fill="none"] + path,
+.task-queue-master svg rect { fill: currentColor; stroke: none; }
+
+.task-queue-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+
+.task-queue-row:hover {
+    background: rgba(49, 91, 255, 0.07);
+}
+
+.task-queue-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--text);
+}
+
+.task-queue-state {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--brand);
+}
+
+.task-quick-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    margin-right: 2px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.task-quick-action:hover {
+    background: rgba(49, 91, 255, 0.12);
+    color: var(--brand);
+}
+
+.task-quick-action svg {
+    width: 14px;
+    height: 14px;
+    fill: currentColor;
+}

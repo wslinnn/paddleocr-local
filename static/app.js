@@ -40,6 +40,7 @@ let selectedModelId = localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL_I
 let tasks = [];
 let activeTaskId = null;
 let activeFilter = 'all';
+let queuePaused = false;
 let activeResultView = 'markdown';
 let isProcessing = false;
 let currentPdf = null;
@@ -217,21 +218,7 @@ function setupEventListeners() {
     els.cancelJobBtn?.addEventListener('click', async () => {
         const task = getActiveTask();
         if (!task) return;
-        try {
-            const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(task.id)}/cancel`, { method: 'POST' });
-            if (!response.ok) throw new Error(await responseErrorText(response));
-            const data = await response.json();
-            if (data && data.ok === false) {
-                // No live job (e.g. the server restarted and the in-memory
-                // queue was lost) — reconcile with the server's durable state.
-                task.jobState = '';
-                await reloadTaskDetail(task);
-                refreshTaskUi(task);
-            }
-        } catch (error) {
-            console.error(error);
-            alert(error.message || t('取消失败，请稍后重试。'));
-        }
+        await cancelTaskById(task.id);
     });
     els.startBtn.addEventListener('click', () => processActiveTask());
     els.copyBtn.addEventListener('click', copyActiveResult);
@@ -1128,6 +1115,7 @@ async function loadTasks() {
             startTaskJobPolling(task.id);
         }
     });
+    loadQueueState();
 }
 
 function reconcileTaskStatus(task) {
@@ -1604,15 +1592,151 @@ async function convertOfficeToPdf(file) {
     return { blob: await response.blob() };
 }
 
+function isTaskQueueActive(task) {
+    return ['queued', 'processing'].includes(task?.jobState) && supportsServerJobs(task);
+}
+
+function canQuickStartTask(task) {
+    return !isTaskQueueActive(task)
+        && task?.status !== 'completed'
+        && supportsServerJobs(task)
+        && Array.isArray(task?.batches)
+        && task.batches.some((batch) => batch.status !== 'completed');
+}
+
+async function cancelTaskById(taskId) {
+    try {
+        const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+        if (!response.ok) throw new Error(await responseErrorText(response));
+        const data = await response.json();
+        if (data && data.ok === false) {
+            const task = tasks.find((item) => item.id === taskId);
+            if (task) {
+                task.jobState = '';
+                await reloadTaskDetail(task);
+                refreshTaskUi(task);
+            }
+        }
+    } catch (error) {
+        console.error(error);
+        alert(error.message || t('取消失败，请稍后重试。'));
+    }
+}
+
+async function quickStartTask(task) {
+    try {
+        await processTask(task, { confirmCompleted: false });
+    } catch (error) {
+        console.error('Quick start failed', task?.id, error);
+    }
+}
+
+async function toggleQueuePause() {
+    try {
+        const response = await apiFetch(`${API_BASE}/queue/pause`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !queuePaused })
+        });
+        if (!response.ok) throw new Error(await responseErrorText(response));
+        const state = await response.json();
+        queuePaused = Boolean(state.paused);
+        renderTaskList();
+    } catch (error) {
+        console.error(error);
+        alert(error.message || t('操作失败，请稍后重试。'));
+    }
+}
+
+async function loadQueueState() {
+    try {
+        const response = await apiFetch(`${API_BASE}/queue/state`);
+        if (!response.ok) return;
+        const state = await response.json();
+        const paused = Boolean(state.paused);
+        if (queuePaused !== paused) {
+            queuePaused = paused;
+            renderTaskList();
+        }
+    } catch (error) {
+        /* queue state is informational; ignore transient failures */
+    }
+}
+
+function queueStopButton(task) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'task-quick-action';
+    button.title = t('停止');
+    button.setAttribute('aria-label', t('停止'));
+    button.innerHTML = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+    button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        button.disabled = true;
+        await cancelTaskById(task.id);
+    });
+    return button;
+}
+
+function renderQueueSection(activeTasks) {
+    const section = document.createElement('div');
+    section.className = 'task-queue-section';
+
+    const head = document.createElement('div');
+    head.className = 'task-queue-head';
+    const title = document.createElement('span');
+    title.textContent = `${t('进行中')} ${activeTasks.length}`;
+    const master = document.createElement('button');
+    master.type = 'button';
+    master.className = 'task-queue-master';
+    master.title = queuePaused ? t('继续队列') : t('暂停队列');
+    master.innerHTML = queuePaused
+        ? '<svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg>'
+        : '<svg viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>';
+    master.addEventListener('click', () => toggleQueuePause());
+    head.append(title, master);
+    section.appendChild(head);
+
+    activeTasks.forEach((task) => {
+        const row = document.createElement('div');
+        row.className = 'task-queue-row';
+        row.dataset.taskId = task.id;
+        const name = document.createElement('span');
+        name.className = 'task-queue-name';
+        name.textContent = task.name;
+        name.title = task.name;
+        const state = document.createElement('span');
+        state.className = 'task-queue-state';
+        state.textContent = statusText(task);
+        row.append(name, state, queueStopButton(task));
+        row.addEventListener('click', () => selectTask(task.id));
+        section.appendChild(row);
+    });
+    return section;
+}
+
 function renderTaskList() {
     const keyword = els.taskSearch.value.trim().toLowerCase();
     els.taskList.innerHTML = '';
-    const visibleTasks = tasks.filter((task) => {
-        if (activeFilter === 'done' && task.status !== 'completed') return false;
-        return !keyword || task.name.toLowerCase().includes(keyword);
-    });
 
-    if (visibleTasks.length === 0) {
+    // Live queue section: pinned, only while jobs exist, never occupies space
+    // when idle. Active tasks are excluded from the filtered list below.
+    const activeTasks = tasks
+        .filter(isTaskQueueActive)
+        .sort((a, b) => (a.jobState === 'processing' ? 0 : 1) - (b.jobState === 'processing' ? 0 : 1) || (a.updatedAt || 0) - (b.updatedAt || 0));
+    if (activeTasks.length > 0) {
+        els.taskList.appendChild(renderQueueSection(activeTasks));
+    }
+
+    const activeIds = new Set(activeTasks.map((task) => task.id));
+    const visibleTasks = tasks.filter((task) => {
+        if (activeIds.has(task.id)) return false;
+        if (activeFilter === 'done') return task.status === 'completed';
+        if (activeFilter === 'unfinished') return task.status !== 'completed';
+        return !keyword || task.name.toLowerCase().includes(keyword);
+    }).filter((task) => !keyword || task.name.toLowerCase().includes(keyword));
+
+    if (visibleTasks.length === 0 && activeTasks.length === 0) {
         els.taskList.innerHTML = `<div class="task-empty">${escapeHtml(t('暂无任务'))}</div>`;
         return;
     }
@@ -1632,6 +1756,20 @@ function renderTaskList() {
             [task.modelName || task.modelId || '', `${task.pageCount || 1} ${t('页')}`, formatStorageBytes(task.size || 0)].filter(Boolean).join(' · '),
             formatDate(task.updatedAt),
         ].join('\n');
+        if (canQuickStartTask(task)) {
+            const startButton = document.createElement('button');
+            startButton.type = 'button';
+            startButton.className = 'task-quick-action';
+            startButton.title = t('启动');
+            startButton.setAttribute('aria-label', t('启动'));
+            startButton.innerHTML = '<svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg>';
+            startButton.addEventListener('click', async (event) => {
+                event.stopPropagation();
+                startButton.disabled = true;
+                await quickStartTask(task);
+            });
+            item.querySelector('.task-delete').before(startButton);
+        }
         const deleteButton = item.querySelector('.task-delete');
         deleteButton.setAttribute('title', t('删除任务'));
         deleteButton.setAttribute('aria-label', t('删除任务'));

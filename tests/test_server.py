@@ -951,6 +951,32 @@ class ServerTaskApiTests(unittest.TestCase):
             response = self.client.get("/api/engine-settings")
             self.assertEqual(response.status_code, 404)
 
+    def test_queue_pause_blocks_pickup_and_resume_completes(self):
+        async def fast_runner(ocr_request, raw):
+            return self._fake_ocr_result("page")
+
+        self._put_queued_task("taskq90010")
+        with patch.object(self.server, "task_model_runner", return_value=fast_runner):
+            pause = self.client.post("/api/queue/pause", json={"enabled": True})
+            self.assertTrue(pause.json()["paused"])
+
+            self.client.post("/api/tasks/taskq90010/process")
+            # Paused: the job must stay queued (no pickup) for a clear window.
+            import time as time_module
+            time_module.sleep(0.6)
+            state = self.client.get("/api/tasks/taskq90010/status").json()
+            self.assertEqual(state["state"], "queued")
+
+            resume = self.client.post("/api/queue/pause", json={"enabled": False})
+            self.assertFalse(resume.json()["paused"])
+            status = self._poll_status("taskq90010", {"completed"})
+            self.assertEqual(status["state"], "completed")
+
+        queue_state = self.client.get("/api/queue/state").json()
+        self.assertFalse(queue_state["paused"])
+        self.assertEqual(queue_state["queued"], 0)
+        self.assertEqual(queue_state["processing"], 0)
+
     def test_ephemeral_ui_fields_never_persist_and_heal_on_read(self):
         task = {
             "id": "ephem0012345", "name": "x.png", "sourceKind": "image",

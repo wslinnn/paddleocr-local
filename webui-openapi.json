@@ -691,6 +691,60 @@
         }
       }
     },
+    "/api/queue/state": {
+      "get": {
+        "summary": "Queue State Endpoint",
+        "description": "Queue master-control state for the UI (pause/resume + live counts).",
+        "operationId": "queue_state_endpoint_api_queue_state_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/queue/pause": {
+      "post": {
+        "summary": "Queue Pause Endpoint",
+        "description": "Pause/resume the queue between jobs (the current job always finishes).",
+        "operationId": "queue_pause_endpoint_api_queue_pause_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueuePauseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/cancel": {
       "post": {
         "summary": "Task Cancel Endpoint",
@@ -990,6 +1044,19 @@
           "modelId"
         ],
         "title": "ModelSwitchRequest"
+      },
+      "QueuePauseRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "QueuePauseRequest"
       },
       "TaskCleanupRequest": {
         "properties": {

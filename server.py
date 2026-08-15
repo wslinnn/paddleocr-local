@@ -2048,6 +2048,10 @@ async def cleanup_tasks(request: TaskCleanupRequest):
 # the existing resume flow. Unlimited-OCR keeps its SSE streaming path.
 
 TASK_QUEUE: asyncio.Queue = asyncio.Queue()
+# Queue master control: cleared = paused (the worker finishes the current job,
+# then waits before picking the next one); set = running.
+QUEUE_RESUME_EVENT = asyncio.Event()
+QUEUE_RESUME_EVENT.set()
 TASK_JOBS: dict[str, dict] = {}
 TASK_WORKER: asyncio.Task | None = None
 TASK_MODEL_IDS = {"pp-ocrv6-rapid", "pp-ocrv6", "ovisocr2"}
@@ -2144,6 +2148,7 @@ def task_job_status(task_id: str) -> dict | None:
 async def task_worker_loop() -> None:
     while True:
         task_id = await TASK_QUEUE.get()
+        await QUEUE_RESUME_EVENT.wait()
         job = ensure_task_job(task_id)
         # Each job runs as its own task so cancellation preempts a job stuck
         # mid-batch instead of waiting for a between-batch checkpoint.
@@ -2377,6 +2382,30 @@ async def task_status_endpoint(task_id: str):
                 TASK_JOBS[task_id]["state"] = "completed"
                 status["state"] = "completed"
     return status
+
+
+class QueuePauseRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/queue/state")
+async def queue_state_endpoint():
+    """Queue master-control state for the UI (pause/resume + live counts)."""
+    return {
+        "paused": not QUEUE_RESUME_EVENT.is_set(),
+        "queued": sum(1 for job in TASK_JOBS.values() if job["state"] == "queued"),
+        "processing": sum(1 for job in TASK_JOBS.values() if job["state"] == "processing"),
+    }
+
+
+@app.post("/api/queue/pause")
+async def queue_pause_endpoint(request: QueuePauseRequest):
+    """Pause/resume the queue between jobs (the current job always finishes)."""
+    if request.enabled:
+        QUEUE_RESUME_EVENT.clear()
+    else:
+        QUEUE_RESUME_EVENT.set()
+    return await queue_state_endpoint()
 
 
 @app.post("/api/tasks/{task_id}/cancel")
