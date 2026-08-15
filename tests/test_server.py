@@ -951,6 +951,28 @@ class ServerTaskApiTests(unittest.TestCase):
             response = self.client.get("/api/engine-settings")
             self.assertEqual(response.status_code, 404)
 
+    def test_startup_recovery_reenqueues_interrupted_tasks(self):
+        async def fake_runner(ocr_request, raw):
+            return self._fake_ocr_result("page")
+
+        # Simulate a task left mid-flight by a restart: status processing,
+        # first batch stuck in 'processing', second still pending.
+        self._put_queued_task("taskq80009")
+        stored = self.server.read_task_file(self.server.task_file_path("taskq80009"))
+        stored["status"] = "processing"
+        stored["batches"][0]["status"] = "processing"
+        self.server.write_task_bundle("taskq80009", stored)
+
+        with patch.object(self.server, "task_model_runner", return_value=fake_runner):
+            recovered = self.server.recover_interrupted_jobs()
+            self.assertEqual(recovered, 1)
+            status = self._poll_status("taskq80009", {"completed"})
+            self.assertEqual(status["batchesDone"], 2)
+
+        detail = self.client.get("/api/tasks/taskq80009").json()
+        self.assertEqual(detail["status"], "completed")
+        self.assertEqual(len(detail["ocrResults"]), 2)
+
     def test_task_queue_batch_timeout_frees_the_queue(self):
         # Deterministic: the FIRST runner call sticks (task A's first batch),
         # every later call returns instantly.

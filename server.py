@@ -1155,6 +1155,9 @@ async def lifespan(_: FastAPI):
     if model_control_available():
         await schedule_model_runtime_activation(DEFAULT_RUNTIME_MODEL_ID)
     TASK_WORKER = asyncio.create_task(task_worker_loop())
+    recovered = await run_in_threadpool(recover_interrupted_jobs)
+    if recovered:
+        logger.info("Recovered %d interrupted task job(s) after restart", recovered)
     yield
     TASK_WORKER.cancel()
 
@@ -2139,6 +2142,49 @@ async def task_worker_loop() -> None:
         finally:
             job["runner_task"] = None
             TASK_QUEUE.task_done()
+
+
+def recover_interrupted_jobs() -> int:
+    """Re-enqueue tasks left mid-flight by a restart.
+
+    Queue state is in-memory; the durable truth is task.json. Any task whose
+    status is 'processing' with pending batches is re-enqueued in updatedAt
+    order (FIFO fairness), with stale in-flight batch markers reset.
+    """
+    recovered = 0
+    if not TASK_DATA_DIR.exists():
+        return 0
+    candidates: list[tuple[int, str]] = []
+    for path in TASK_DATA_DIR.iterdir():
+        if not path.is_dir() or not re.fullmatch(r"[A-Za-z0-9_-]{6,80}", path.name):
+            continue
+        task_file = path / "task.json"
+        if not task_file.exists():
+            continue
+        try:
+            task = read_task_file(task_file)
+        except Exception:
+            continue
+        if task.get("status") == "processing":
+            candidates.append((task.get("updatedAt") or 0, path.name))
+    for _, task_id in sorted(candidates):
+        try:
+            task = hydrate_task_detail(task_id, read_task_file(task_file_path(task_id)))
+        except Exception:
+            logger.warning("Startup recovery: failed to read task %s", task_id)
+            continue
+        if task.get("modelId") not in TASK_MODEL_IDS:
+            continue
+        pending = [b for b in (task.get("batches") or []) if b.get("status") == "pending"]
+        if not pending:
+            continue
+        for batch in task.get("batches") or []:
+            if batch.get("status") == "processing":
+                batch["status"] = "pending"
+        write_task_bundle(task_id, task)
+        enqueue_task_processing(task_id, task)
+        recovered += 1
+    return recovered
 
 
 def build_job_batch_payload(task_id: str, task: dict, batch: dict) -> tuple[bytes, int]:

@@ -220,6 +220,14 @@ function setupEventListeners() {
         try {
             const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(task.id)}/cancel`, { method: 'POST' });
             if (!response.ok) throw new Error(await responseErrorText(response));
+            const data = await response.json();
+            if (data && data.ok === false) {
+                // No live job (e.g. the server restarted and the in-memory
+                // queue was lost) — reconcile with the server's durable state.
+                task.jobState = '';
+                await reloadTaskDetail(task);
+                refreshTaskUi(task);
+            }
         } catch (error) {
             console.error(error);
             alert(error.message || t('取消失败，请稍后重试。'));
