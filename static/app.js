@@ -1615,6 +1615,11 @@ function renderTaskList() {
         item.querySelector('.task-name').textContent = task.name;
         item.querySelector('.task-meta').textContent = `${formatDate(task.updatedAt)} · ${formatPageCount(task.pageCount || 1)}`;
         item.querySelector('.task-state').textContent = statusText(task);
+        item.title = [
+            task.name,
+            [task.modelName || task.modelId || '', `${task.pageCount || 1} ${t('页')}`, formatStorageBytes(task.size || 0)].filter(Boolean).join(' · '),
+            formatDate(task.updatedAt),
+        ].join('\n');
         const deleteButton = item.querySelector('.task-delete');
         deleteButton.setAttribute('title', t('删除任务'));
         deleteButton.setAttribute('aria-label', t('删除任务'));
