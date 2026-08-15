@@ -69,12 +69,12 @@ docker compose -f docker-compose.rapidocr.yml up -d --build
 ## Roadmap
 
 - [ ] 模型档位（tiny/small/medium）与语种的前端切换（运行时热重载）
-- [ ] 隐私控制：源文件即用即删、保留期可配
+- [ ] 更新 README 截图（当前为旧版 UI）
+- [ ] 可搜索 PDF 导出（原图层 + 文字层）
+- [ ] DOCX 导出
+- [ ] 校对增强：撤销 / 批量替换
+- [ ] 后端错误消息本地化
 - [ ] API 调用示例（curl / Python）
-- [ ] 导出扩展：DOCX、可搜索 PDF（原图层 + 文字层）
-- [ ] 多用户数据隔离
-- [ ] 体验打磨：骨架屏 / Toast / 空状态引导
-- [ ] 移动端整体验证
 
 明确不做：表格结构识别、字段提取（需布局大模型，超出纯 CPU 轻量定位）。
 

@@ -69,12 +69,12 @@ The installer asks which model to deploy first and downloads only that model. Fo
 ## Roadmap
 
 - [ ] Frontend switching of model tier (tiny/small/medium) and OCR language (runtime hot reload)
-- [ ] Privacy controls: delete source files after parsing, configurable retention
+- [ ] Refresh README screenshots (current ones show the old UI)
+- [ ] Searchable PDF export (image layer + text layer)
+- [ ] DOCX export
+- [ ] Proofreading: undo / batch replace
+- [ ] Localized backend error messages
 - [ ] API calling examples (curl / Python)
-- [ ] Export extensions: DOCX, searchable PDF (image layer + text layer)
-- [ ] Multi-user data isolation
-- [ ] Polish: skeletons / toasts / empty states
-- [ ] Mobile audit
 
 Explicit non-goals: table-structure recognition and field extraction (require layout models; outside the pure-CPU lightweight scope).
 
