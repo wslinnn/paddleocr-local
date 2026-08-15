@@ -532,7 +532,7 @@
     "/api/tasks/{task_id}/export": {
       "get": {
         "summary": "Export Task",
-        "description": "Export a task's OCR results as a reflowed PDF (text positioned by rec_boxes).",
+        "description": "Export a task's OCR results: reflowed PDF (text by rec_boxes) or\nsearchable PDF (original page images + invisible text layer).",
         "operationId": "export_task_api_tasks__task_id__export_get",
         "parameters": [
           {
@@ -550,7 +550,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(pdf)$",
+              "pattern": "^(pdf|searchable-pdf)$",
               "default": "pdf",
               "title": "Format"
             }

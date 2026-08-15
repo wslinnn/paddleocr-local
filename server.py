@@ -1964,9 +1964,77 @@ def build_relaid_pdf(ocr_results: list) -> bytes:
     return buffer.getvalue()
 
 
+def page_image_bytes(page: dict) -> bytes | None:
+    """Decode the page's source image (the exact image OCR ran on)."""
+    page_image = page.get("pageImage") or page.get("inputImage")
+    if not isinstance(page_image, str) or not page_image:
+        return None
+    try:
+        payload = page_image.split(",", 1)[1] if "," in page_image else page_image
+        return base64.b64decode(payload)
+    except Exception:
+        return None
+
+
+def build_searchable_pdf(ocr_results: list) -> bytes:
+    """Generate a searchable PDF: original page images + invisible text layer.
+
+    Keeps the original look (image layer) while making the content
+    selectable, copyable, and full-text searchable (render_mode 3 text placed
+    at each rec_box). Coordinates align exactly because pageImage IS the
+    image OCR ran on.
+    """
+    import fitz
+
+    font_path = find_cjk_font()
+    doc = fitz.open()
+    for page in ocr_results:
+        page_dict = page if isinstance(page, dict) else {}
+        image_bytes = page_image_bytes(page_dict)
+        if image_bytes is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Task lacks page images (saved before visualization export); re-parse the task or export the reflowed PDF instead",
+            )
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+        pdf_page = doc.new_page(width=width, height=height)
+        pdf_page.insert_image(fitz.Rect(0, 0, width, height), stream=image_bytes)
+
+        pruned = page_dict.get("prunedResult") or {}
+        boxes = pruned.get("rec_boxes") or []
+        texts = pruned.get("rec_texts") or []
+        for box, text in zip(boxes, texts):
+            if not text or not isinstance(box, (list, tuple)) or len(box) < 4:
+                continue
+            try:
+                x1, y1, x2, y2 = (float(v) for v in box[:4])
+            except (TypeError, ValueError):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            fontsize = max(6.0, (y2 - y1) * 0.8)
+            baseline = y2 - (y2 - y1) * 0.2
+            text_kwargs = {"fontsize": fontsize, "render_mode": 3}
+            if font_path:
+                text_kwargs["fontname"] = "noto"
+                text_kwargs["fontfile"] = font_path
+            else:
+                text_kwargs["fontname"] = "china-s"
+            try:
+                pdf_page.insert_text(fitz.Point(x1, baseline), str(text), **text_kwargs)
+            except Exception:
+                continue
+    buffer = io.BytesIO()
+    doc.save(buffer, deflate=True)
+    doc.close()
+    return buffer.getvalue()
+
+
 @app.get("/api/tasks/{task_id}/export")
-async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf)$")):
-    """Export a task's OCR results as a reflowed PDF (text positioned by rec_boxes)."""
+async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf|searchable-pdf)$")):
+    """Export a task's OCR results: reflowed PDF (text by rec_boxes) or
+    searchable PDF (original page images + invisible text layer)."""
     path = task_file_path(task_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Task not found")
@@ -1978,11 +2046,16 @@ async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf)$"
     ocr_results = task.get("ocrResults") or []
     if not ocr_results:
         raise HTTPException(status_code=400, detail="Task has no OCR results to export")
-    pdf_bytes = await run_in_threadpool(build_relaid_pdf, ocr_results)
+    if format == "searchable-pdf":
+        pdf_bytes = await run_in_threadpool(build_searchable_pdf, ocr_results)
+        filename = f"{safe_task_id(task_id)}-searchable.pdf"
+    else:
+        pdf_bytes = await run_in_threadpool(build_relaid_pdf, ocr_results)
+        filename = f"{safe_task_id(task_id)}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe_task_id(task_id)}.pdf"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

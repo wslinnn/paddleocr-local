@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import importlib
 import io
 import json
@@ -1146,6 +1147,44 @@ class ServerTaskApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "application/pdf")
         self.assertGreater(len(response.content), 100)
+
+    def test_export_task_returns_searchable_pdf(self):
+        import fitz
+        from PIL import Image as PILImage
+
+        buffer = io.BytesIO()
+        PILImage.new("RGB", (120, 80), color=(240, 240, 240)).save(buffer, format="JPEG")
+        page_image = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+        task = {
+            "id": "export2", "name": "x.pdf", "sourceKind": "pdf",
+            "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 1,
+            "createdAt": 1, "updatedAt": 1, "status": "completed",
+            "ocrResults": [{
+                "pageImage": page_image,
+                "prunedResult": {"rec_texts": ["发票号码"], "rec_boxes": [[10, 10, 100, 30]]},
+            }],
+        }
+        self.client.put("/api/tasks/export2", json=task)
+        response = self.client.get("/api/tasks/export2/export?format=searchable-pdf")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/pdf")
+
+        doc = fitz.open(stream=response.content, filetype="pdf")
+        self.assertEqual(len(doc), 1)
+        self.assertGreaterEqual(len(doc[0].get_images()), 1)
+        self.assertIn("发票号码", doc[0].get_text())
+        doc.close()
+
+    def test_searchable_pdf_requires_page_images(self):
+        task = {
+            "id": "export3", "name": "x.pdf", "sourceKind": "pdf",
+            "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 1,
+            "createdAt": 1, "updatedAt": 1, "status": "completed",
+            "ocrResults": [{"prunedResult": {"rec_texts": ["hi"], "rec_boxes": [[1, 1, 9, 9]]}}],
+        }
+        self.client.put("/api/tasks/export3", json=task)
+        response = self.client.get("/api/tasks/export3/export?format=searchable-pdf")
+        self.assertEqual(response.status_code, 400)
 
 
 if __name__ == "__main__":

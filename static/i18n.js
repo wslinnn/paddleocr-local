@@ -52,6 +52,7 @@ window.PANDOCR_I18N = {
             '解析中': 'Parsing',
             '取消失败，请稍后重试。': 'Cancel failed, please try again later.',
             '取消解析': 'Cancel parsing',
+            'PDF（可搜索）': 'PDF (searchable)',
             '识别档位': 'Recognition tier',
             'Tiny（最快）': 'Tiny (fastest)',
             'Small（均衡）': 'Small (balanced)',
