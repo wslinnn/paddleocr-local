@@ -2163,6 +2163,12 @@ async function pollTaskJob(taskId) {
     if (['completed', 'error', 'cancelled'].includes(status.state)) {
         stopTaskJobPolling(taskId);
         task.jobState = '';
+    } else if (['completed', 'error'].includes(task.status)) {
+        // Stale-queue reconciliation: the disk already reached a terminal
+        // state while the in-memory job still claims queued/processing
+        // (possible after a server restart) — the disk wins.
+        stopTaskJobPolling(taskId);
+        task.jobState = '';
     }
     refreshTaskUi(task);
 }
@@ -3270,7 +3276,10 @@ function rebuildPdfBatchPlan(task) {
 
 function taskVisualStatus(task) {
     // Returns a CSS-class token (status-<token>), NOT display text — the label
-    // lives in statusText. Keep these two concerns separate.
+    // lives in statusText. Terminal disk states are authoritative: an in-memory
+    // queue flag must never recolor a completed/error task.
+    if (task?.status === 'completed') return 'completed';
+    if (task?.status === 'error') return 'error';
     if (task?.jobState === 'queued') return 'queued';
     if (isTaskActivelyProcessing(task)) return 'processing';
     return shouldResumeTask(task) ? 'pending' : (task?.status || 'pending');
@@ -3881,16 +3890,23 @@ function toggleSettingsPopover() {
         return;
     }
     const rect = els.settingsBtn.getBoundingClientRect();
-    els.settingsPopover.style.top = `${rect.bottom + 8}px`;
-    els.settingsPopover.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
     els.settingsPopover.classList.remove('hidden');
+    // Right-anchored to the gear button, clamped so narrow/mobile viewports
+    // never clip the panel off either edge.
+    const popoverWidth = els.settingsPopover.offsetWidth || 320;
+    const right = Math.max(
+        8,
+        Math.min(window.innerWidth - popoverWidth - 8, window.innerWidth - rect.right)
+    );
+    els.settingsPopover.style.top = `${rect.bottom + 8}px`;
+    els.settingsPopover.style.right = `${right}px`;
     setTimeout(() => {
         const close = (event) => {
             if (els.settingsPopover.contains(event.target) || els.settingsBtn.contains(event.target)) return;
             els.settingsPopover.classList.add('hidden');
-            document.removeEventListener('mousedown', close);
+            document.removeEventListener('pointerdown', close);
         };
-        document.addEventListener('mousedown', close);
+        document.addEventListener('pointerdown', close);
     }, 0);
 }
 

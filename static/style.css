@@ -1628,6 +1628,7 @@ svg {
     position: fixed;
     z-index: 1000;
     width: 320px;
+    max-width: calc(100vw - 16px);
     background: #fff;
     border: 1px solid #e2e8f0;
     border-radius: 10px;

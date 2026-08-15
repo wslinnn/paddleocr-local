@@ -2257,6 +2257,17 @@ async def task_status_endpoint(task_id: str):
             {"id": b.get("id"), "status": b.get("status"), "label": b.get("label", "")}
             for b in batches
         ]
+        # Stale in-memory queue guard: if the disk already says completed with
+        # nothing pending, an in-memory queued/processing claim (possible after
+        # a restart raced with the enqueue) is wrong — the disk is authoritative.
+        if status["state"] in ("queued", "processing") and stored.get("status") == "completed":
+            has_pending = any(
+                isinstance(b, dict) and b.get("status") in ("pending", "processing")
+                for b in batches
+            )
+            if not has_pending:
+                TASK_JOBS[task_id]["state"] = "completed"
+                status["state"] = "completed"
     return status
 
 

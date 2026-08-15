@@ -908,6 +908,23 @@ class ServerTaskApiTests(unittest.TestCase):
         response = self.client.post("/api/tasks/taskq30003/process")
         self.assertEqual(response.status_code, 400)
 
+    def test_task_status_reconciles_stale_queued_job_against_disk(self):
+        async def fake_runner(ocr_request, raw):
+            return self._fake_ocr_result("page")
+
+        self._put_queued_task("taskq50005")
+        with patch.object(self.server, "task_model_runner", return_value=fake_runner):
+            self.client.post("/api/tasks/taskq50005/process")
+            self._poll_status("taskq50005", {"completed"})
+
+        # Simulate a stale in-memory queue claim (e.g. restart race): the disk
+        # says completed, TASK_JOBS says queued — the status endpoint must side
+        # with the disk.
+        self.server.TASK_JOBS["taskq50005"]["state"] = "queued"
+        status = self.client.get("/api/tasks/taskq50005/status").json()
+        self.assertEqual(status["state"], "completed")
+        self.assertEqual(self.server.TASK_JOBS["taskq50005"]["state"], "completed")
+
     def test_task_queue_process_is_idempotent(self):
         gate = {"open": False}
 
