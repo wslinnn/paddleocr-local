@@ -23,6 +23,14 @@ RUN pip install --no-cache-dir \
       uvicorn==0.46.0 \
       python-multipart==0.0.27
 
+# Pre-bake all three PP-OCRv6 tiers (tiny/small/medium det+rec, plus the
+# shared cls model) into the image so runtime tier switching never waits on
+# model downloads — a switch just loads engines from disk. Models land in
+# site-packages/rapidocr/models. Falls back to lazy download when the build
+# host can't reach modelscope.
+RUN python -c "from rapidocr import ModelType, RapidOCR; [RapidOCR(params={'Det.model_type': t, 'Rec.model_type': t}) for t in (ModelType.TINY, ModelType.SMALL, ModelType.MEDIUM)]" \
+      || echo "model prefetch skipped; will download lazily at runtime"
+
 WORKDIR /app
 COPY rapidocr_adapter.py /app/rapidocr_adapter.py
 
