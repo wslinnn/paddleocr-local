@@ -1563,7 +1563,17 @@ def write_json_file(path: Path, payload: dict) -> None:
     temp_path = path.with_suffix(path.suffix + ".tmp")
     with temp_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
-    temp_path.replace(path)
+    # Windows: os.replace onto a file that a concurrent reader has open raises
+    # PermissionError (the /status reader races the worker's writes). Retry
+    # briefly; on Linux rename is atomic and the retry never triggers.
+    for attempt in range(5):
+        try:
+            temp_path.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
 
 
 def write_task_bundle(task_id: str, task: dict) -> dict:
