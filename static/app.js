@@ -95,6 +95,7 @@ const els = {
     storageBtn: document.getElementById('storage-btn'),
     settingsBtn: document.getElementById('settings-btn'),
     settingsPopover: document.getElementById('settings-popover'),
+    cancelJobBtn: document.getElementById('cancel-job-btn'),
     languageToggle: document.getElementById('language-toggle'),
     statusDot: document.getElementById('model-status-dot'),
     statusText: document.getElementById('model-status-text'),
@@ -211,6 +212,17 @@ function setupEventListeners() {
     els.clearHistoryBtn.addEventListener('click', clearHistory);
     els.storageBtn?.addEventListener('click', () => openStorageManager(els.storageBtn));
     els.settingsBtn?.addEventListener('click', () => toggleSettingsPopover());
+    els.cancelJobBtn?.addEventListener('click', async () => {
+        const task = getActiveTask();
+        if (!task) return;
+        try {
+            const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(task.id)}/cancel`, { method: 'POST' });
+            if (!response.ok) throw new Error(await responseErrorText(response));
+        } catch (error) {
+            console.error(error);
+            alert(error.message || t('取消失败，请稍后重试。'));
+        }
+    });
     els.startBtn.addEventListener('click', () => processActiveTask());
     els.copyBtn.addEventListener('click', copyActiveResult);
     els.downloadBtn.addEventListener('click', downloadActiveTask);
@@ -733,7 +745,7 @@ async function handleUnlimitedOcrBackendChange() {
 
 async function handleModelSelectionChange() {
     const nextModelId = els.modelSelect.value || DEFAULT_MODEL_ID;
-    if (isProcessing || modelSwitchInFlight) {
+    if (isProcessing || hasActiveServerJobs() || modelSwitchInFlight) {
         els.modelSelect.value = selectedModelId;
         alert(t('当前正在解析或切换模型，请完成后再切换。'));
         return;
@@ -1097,6 +1109,13 @@ async function saveTaskToServer(task, { includeResults = true } = {}) {
 async function loadTasks() {
     const localTasks = await loadServerTasks();
     tasks = dedupeTasks(localTasks.map(reconcileTaskStatus));
+    // A task left 'processing' by a closed tab keeps running server-side —
+    // reattach to its job (a 404 means the server restarted; poller stops).
+    tasks.forEach((task) => {
+        if (task.status === 'processing' && supportsServerJobs(task)) {
+            startTaskJobPolling(task.id);
+        }
+    });
 }
 
 function reconcileTaskStatus(task) {
@@ -2042,6 +2061,133 @@ function isUnlimitedOCRTask(task) {
         || Boolean(task?.ocrResults?.some((pageResult) => pageResult?.parser === 'unlimited-ocr'));
 }
 
+// Models whose OCR runs as a server-side background job (FIFO queue).
+// Unlimited-OCR keeps the browser-side streaming loop.
+const SERVER_JOB_MODEL_IDS = new Set(['pp-ocrv6-rapid', 'pp-ocrv6', 'ovisocr2']);
+
+function supportsServerJobs(task) {
+    return SERVER_JOB_MODEL_IDS.has(getTaskModel(task)?.id || task?.modelId || '');
+}
+
+function hasActiveServerJobs() {
+    return taskJobPollers.size > 0;
+}
+
+function collectParseSettings() {
+    const ignoreLabels = [];
+    if (els.ignoreNumberSwitch?.checked) ignoreLabels.push('number');
+    ignoreLabels.push('footnote');
+    if (els.ignoreHeaderSwitch?.checked) ignoreLabels.push('header', 'header_image');
+    if (els.ignoreFooterSwitch?.checked) ignoreLabels.push('footer', 'footer_image');
+    ignoreLabels.push('aside_text');
+    return {
+        useChartRecognition: Boolean(els.chartRecognitionSwitch?.checked),
+        useDocUnwarping: Boolean(els.docUnwarpingSwitch?.checked),
+        useDocOrientationClassify: Boolean(els.docOrientationSwitch?.checked),
+        useTextlineOrientation: false,
+        useSealRecognition: els.sealRecognitionSwitch?.checked ?? true,
+        formatBlockContent: true,
+        showFormulaNumber: els.formulaNumberSwitch?.checked ?? true,
+        markdownIgnoreLabels: ignoreLabels
+    };
+}
+
+const taskJobPollers = new Map();
+
+function startTaskJobPolling(taskId) {
+    if (taskJobPollers.has(taskId)) return;
+    const timer = window.setInterval(() => {
+        pollTaskJob(taskId).catch((error) => console.warn('Task status poll failed', error));
+    }, 1500);
+    taskJobPollers.set(taskId, timer);
+    pollTaskJob(taskId).catch((error) => console.warn('Task status poll failed', error));
+}
+
+function stopTaskJobPolling(taskId) {
+    const timer = taskJobPollers.get(taskId);
+    if (timer) window.clearInterval(timer);
+    taskJobPollers.delete(taskId);
+}
+
+async function pollTaskJob(taskId) {
+    const task = tasks.find((item) => item.id === taskId);
+    if (!task) {
+        stopTaskJobPolling(taskId);
+        return;
+    }
+    const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/status`);
+    if (response.status === 404) {
+        // Server restarted without the job — the persisted batches remain,
+        // so the task falls back to the resumable state.
+        stopTaskJobPolling(taskId);
+        if (task.jobState === 'processing' || task.jobState === 'queued') {
+            task.jobState = '';
+            task.status = 'pending';
+            task.error = t('上次解析中断，可继续解析。');
+            refreshTaskUi(task);
+        }
+        return;
+    }
+    if (!response.ok) return;
+    const status = await response.json();
+
+    const previousResultsCount = task.ocrResults?.length || 0;
+    task.jobState = status.state;
+    task.jobProgress = { done: status.batchesDone, total: status.batchesTotal };
+    task.jobEta = status.etaSeconds;
+    if (Array.isArray(status.batches)) {
+        const serverBatches = new Map(status.batches.map((batch) => [batch.id, batch]));
+        (task.batches || []).forEach((batch) => {
+            const serverBatch = serverBatches.get(batch.id);
+            if (serverBatch) batch.status = serverBatch.status;
+        });
+    }
+    if (status.state === 'completed') task.status = 'completed';
+    else if (status.state === 'error') { task.status = 'error'; task.error = status.error; }
+    else if (status.state === 'cancelled') { task.status = 'pending'; task.error = null; }
+    else task.status = 'processing';
+    task.updatedAt = Date.now();
+
+    if (status.resultsCount > previousResultsCount
+        || ['completed', 'error', 'cancelled'].includes(status.state)) {
+        await reloadTaskDetail(task);
+    }
+    if (['completed', 'error', 'cancelled'].includes(status.state)) {
+        stopTaskJobPolling(taskId);
+        task.jobState = '';
+    }
+    refreshTaskUi(task);
+}
+
+async function reloadTaskDetail(task) {
+    const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(task.id)}`);
+    if (!response.ok) return;
+    const detail = await response.json();
+    task.markdown = detail.markdown ?? task.markdown;
+    task.images = detail.images || {};
+    task.ocrResults = detail.ocrResults || task.ocrResults || [];
+    task.batches = detail.batches || task.batches;
+    task.status = detail.status || task.status;
+    task.error = detail.error || null;
+    task.updatedAt = detail.updatedAt || task.updatedAt;
+    task.detailLoaded = true;
+}
+
+async function enqueueServerProcessing(task) {
+    const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(task.id)}/process`, {
+        method: 'POST'
+    });
+    if (!response.ok) {
+        throw new Error(await responseErrorText(response));
+    }
+    const info = await response.json();
+    task.jobState = info.state || 'queued';
+    task.jobProgress = { done: 0, total: info.batchesTotal || 0 };
+    task.queueAhead = info.ahead || 0;
+    startTaskJobPolling(task.id);
+    return info;
+}
+
 function isOvisOCR2Task(task) {
     return task?.modelId === OVIS_OCR_MODEL_ID
         || Boolean(task?.ocrResults?.some((pageResult) => pageResult?.parser === OVIS_OCR_MODEL_ID));
@@ -2963,7 +3109,10 @@ async function processActiveTask() {
 }
 
 async function processTask(task, { confirmCompleted = true } = {}) {
-    if (!task || isProcessing) return;
+    if (!task) return;
+    const serverJobTask = supportsServerJobs(task);
+    if (isProcessing && !serverJobTask) return;
+    if (isProcessing && serverJobTask && getTaskModel(task)?.id === UNLIMITED_OCR_MODEL_ID) return;
     if (confirmCompleted && task.status === 'completed' && !confirm(t('这个任务已经解析完成，要重新解析吗？'))) return;
 
     const resumeExistingResults = shouldResumeTask(task);
@@ -2998,6 +3147,18 @@ async function processTask(task, { confirmCompleted = true } = {}) {
         task.status = 'processing';
         task.error = null;
         task.updatedAt = Date.now();
+
+        if (supportsServerJobs(task)) {
+            // Server-side FIFO queue: persist the plan + settings, enqueue,
+            // and let polling drive the UI. Closing the tab no longer stops OCR.
+            task.parseSettings = collectParseSettings();
+            task.jobState = 'queued';
+            await saveTask(task);
+            await enqueueServerProcessing(task);
+            refreshTaskUi(task);
+            return;
+        }
+
         await saveTask(task);
         refreshTaskUi(task);
 
@@ -3100,6 +3261,12 @@ function rebuildPdfBatchPlan(task) {
 }
 
 function taskVisualStatus(task) {
+    if (task?.jobState === 'queued') return t('排队中');
+    if (task?.jobState === 'processing' && task?.jobProgress) {
+        const { done, total } = task.jobProgress;
+        const eta = Number.isFinite(task.jobEta) ? ` · ${Math.max(1, Math.round(task.jobEta))}s` : '';
+        return `${t('解析中')} ${done}/${total}${eta}`;
+    }
     if (isTaskActivelyProcessing(task)) return 'processing';
     return shouldResumeTask(task) ? 'pending' : (task?.status || 'pending');
 }
@@ -3501,7 +3668,7 @@ function updateActionState(task) {
     const canDeployMissingModel = task && !modelReady && isModelRuntimeMissing(taskModel.id);
     const modelStarting = task && !modelReady && isModelRuntimeSwitching(taskModel.id);
     if (els.modelSelect) {
-        els.modelSelect.disabled = isProcessing || modelSwitchInFlight || isModelRuntimeSwitching();
+        els.modelSelect.disabled = isProcessing || hasActiveServerJobs() || modelSwitchInFlight || isModelRuntimeSwitching();
     }
     if (els.unlimitedBackendSelect) {
         els.unlimitedBackendSelect.disabled = (
@@ -3515,8 +3682,13 @@ function updateActionState(task) {
     els.startBtn.disabled = !task
         || !isTaskDetailLoaded(task)
         || isProcessing
+        || hasActiveServerJobs()
         || modelStarting
         || (!modelReady && !canStartAfterSwitch && !canDeployMissingModel);
+    els.cancelJobBtn?.classList.toggle(
+        'hidden',
+        !(task && ['queued', 'processing'].includes(task.jobState) && supportsServerJobs(task))
+    );
     updateCopyButtonState(task);
     els.downloadBtn.disabled = !hasResult;
     const startLabel = startButtonLabel(task);

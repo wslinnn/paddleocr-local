@@ -402,6 +402,23 @@
         }
       }
     },
+    "/api/tasks/storage": {
+      "get": {
+        "summary": "Get Task Storage",
+        "description": "Report task-store usage so users can see what needs cleaning.",
+        "operationId": "get_task_storage_api_tasks_storage_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}": {
       "get": {
         "summary": "Get Task",
@@ -561,23 +578,6 @@
         }
       }
     },
-    "/api/tasks/storage": {
-      "get": {
-        "summary": "Get Task Storage",
-        "description": "Report task-store usage so users can see what needs cleaning.",
-        "operationId": "get_task_storage_api_tasks_storage_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/tasks/cleanup": {
       "post": {
         "summary": "Cleanup Tasks",
@@ -593,6 +593,120 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/process": {
+      "post": {
+        "summary": "Process Task Endpoint",
+        "description": "Enqueue background processing of a task's pending batches (FIFO).",
+        "operationId": "process_task_endpoint_api_tasks__task_id__process_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/status": {
+      "get": {
+        "summary": "Task Status Endpoint",
+        "description": "Compact progress for a background job (poll ~1.5s).",
+        "operationId": "task_status_endpoint_api_tasks__task_id__status_get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/cancel": {
+      "post": {
+        "summary": "Task Cancel Endpoint",
+        "description": "Cancel a queued or processing job (between batches).",
+        "operationId": "task_cancel_endpoint_api_tasks__task_id__cancel_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
