@@ -951,6 +951,29 @@ class ServerTaskApiTests(unittest.TestCase):
             response = self.client.get("/api/engine-settings")
             self.assertEqual(response.status_code, 404)
 
+    def test_ephemeral_ui_fields_never_persist_and_heal_on_read(self):
+        task = {
+            "id": "ephem0012345", "name": "x.png", "sourceKind": "image",
+            "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 10,
+            "createdAt": 1, "updatedAt": 1, "status": "error",
+            "pageCount": 1, "batches": [], "markdown": "", "images": {}, "ocrResults": [],
+            # Simulate the historic leak: session-only UI state stored on disk.
+            "jobState": "queued", "jobProgress": {"done": 0, "total": 1},
+            "jobEta": 12, "queueAhead": 0,
+        }
+        self.client.put("/api/tasks/ephem0012345", json=task)
+
+        # Write path: stored task.json must not contain the ephemeral keys.
+        stored = self.server.read_task_file(self.server.task_file_path("ephem0012345"))
+        for key in ("jobState", "jobProgress", "jobEta", "queueAhead"):
+            self.assertNotIn(key, stored)
+
+        # Read path: even a contaminated document self-heals on hydrate.
+        contaminated = dict(task)
+        contaminated["jobState"] = "queued"
+        healed = self.server.hydrate_task_detail("ephem0012345", contaminated)
+        self.assertNotIn("jobState", healed)
+
     def test_startup_recovery_reenqueues_interrupted_tasks(self):
         async def fake_runner(ocr_request, raw):
             return self._fake_ocr_result("page")

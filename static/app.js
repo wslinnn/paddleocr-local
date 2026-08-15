@@ -3178,8 +3178,8 @@ async function processTask(task, { confirmCompleted = true } = {}) {
             // Server-side FIFO queue: persist the plan + settings, enqueue,
             // and let polling drive the UI. Closing the tab no longer stops OCR.
             task.parseSettings = collectParseSettings();
-            task.jobState = 'queued';
             await saveTask(task);
+            task.jobState = 'queued';
             await enqueueServerProcessing(task);
             refreshTaskUi(task);
             return;
@@ -3654,11 +3654,15 @@ function createPdfBatchDescriptors(pageCount, pdfBatchSize, sourceDataUrl = '', 
     return batches;
 }
 
+const EPHEMERAL_TASK_FIELDS = ['jobState', 'jobProgress', 'jobEta', 'queueAhead'];
+
 function taskForPersistence(task, { includeResults = true } = {}) {
     const persisted = { ...task };
     delete persisted.detailLoaded;
     delete persisted._storage;
     delete persisted._resultState;
+    // Session-only UI state must never reach the durable task document.
+    EPHEMERAL_TASK_FIELDS.forEach((key) => delete persisted[key]);
     if (includeResults && persisted.markdown) {
         persisted.markdown = stripStreamStatusMarkdown(persisted.markdown);
     }
@@ -5470,13 +5474,13 @@ function taskIcon(task) {
 function statusText(task) {
     const donePages = task.batches?.filter((batch) => batch.status === 'completed').reduce((sum, batch) => sum + batch.pageCount, 0) || task.completedPages || 0;
     if (task.status === 'completed') return t('完成');
+    if (task.status === 'error') return t('失败');
     if (task.jobState === 'queued') return t('排队中');
     if (isTaskActivelyProcessing(task)) {
         const eta = Number.isFinite(task.jobEta) ? ` · ~${Math.max(1, Math.round(task.jobEta))}s` : '';
         return `${t('{done}/{total} 解析中', { done: donePages, total: task.pageCount || 1 })}${eta}`;
     }
     if (shouldResumeTask(task)) return t('{done}/{total} 可继续', { done: donePages, total: task.pageCount || 1 });
-    if (task.status === 'error') return t('失败');
     return t('待解析');
 }
 

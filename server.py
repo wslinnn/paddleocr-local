@@ -1448,6 +1448,8 @@ def split_task_for_storage(task: dict) -> tuple[dict, dict | None]:
 
     stored = dict(task)
     stored.pop("detailLoaded", None)
+    for key in EPHEMERAL_TASK_FIELDS:
+        stored.pop(key, None)
     preserve_result = bool(stored.pop("_preserveResult", False))
 
     result_payload = {}
@@ -1584,7 +1586,14 @@ def write_task_bundle(task_id: str, task: dict) -> dict:
     return stored_task
 
 
+def strip_ephemeral_task_fields(task: dict) -> dict:
+    for key in EPHEMERAL_TASK_FIELDS:
+        task.pop(key, None)
+    return task
+
+
 def hydrate_task_detail(task_id: str, task: dict) -> dict:
+    strip_ephemeral_task_fields(task)
     storage = task.get("_storage") if isinstance(task.get("_storage"), dict) else {}
     result_name = storage.get("resultPath") or TASK_RESULT_FILE
     result_path = task_dir_path(task_id) / result_name
@@ -2032,6 +2041,10 @@ TASK_QUEUE: asyncio.Queue = asyncio.Queue()
 TASK_JOBS: dict[str, dict] = {}
 TASK_WORKER: asyncio.Task | None = None
 TASK_MODEL_IDS = {"pp-ocrv6-rapid", "pp-ocrv6", "ovisocr2"}
+# Session-only UI state that must never persist in task.json (a historic leak
+# contaminated stored tasks; stripped on write and on read so existing
+# documents self-heal).
+EPHEMERAL_TASK_FIELDS = ("jobState", "jobProgress", "jobEta", "queueAhead")
 # Per-batch watchdog: a batch stuck longer than this is failed and the queue
 # moves on (0 disables). Default 15 min — generous for any sane batch size.
 JOB_BATCH_TIMEOUT = float(os.getenv("PANDOCR_JOB_BATCH_TIMEOUT", "900"))
