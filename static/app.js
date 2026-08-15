@@ -1270,7 +1270,12 @@ async function handleFiles(files) {
     }
 
     for (const task of newTasks) {
-        await processTask(task, { confirmCompleted: false });
+        // One task's failure to enqueue must never abort the remaining ones.
+        try {
+            await processTask(task, { confirmCompleted: false });
+        } catch (error) {
+            console.error('Task processing failed to start', task?.id, error);
+        }
     }
 }
 
@@ -2145,7 +2150,7 @@ async function pollTaskJob(taskId) {
     if (status.state === 'completed') task.status = 'completed';
     else if (status.state === 'error') { task.status = 'error'; task.error = status.error; }
     else if (status.state === 'cancelled') { task.status = 'pending'; task.error = null; }
-    else task.status = 'processing';
+    else { task.status = 'processing'; task.error = null; }
     task.updatedAt = Date.now();
 
     if (status.resultsCount > previousResultsCount
@@ -3261,12 +3266,9 @@ function rebuildPdfBatchPlan(task) {
 }
 
 function taskVisualStatus(task) {
-    if (task?.jobState === 'queued') return t('排队中');
-    if (task?.jobState === 'processing' && task?.jobProgress) {
-        const { done, total } = task.jobProgress;
-        const eta = Number.isFinite(task.jobEta) ? ` · ${Math.max(1, Math.round(task.jobEta))}s` : '';
-        return `${t('解析中')} ${done}/${total}${eta}`;
-    }
+    // Returns a CSS-class token (status-<token>), NOT display text — the label
+    // lives in statusText. Keep these two concerns separate.
+    if (task?.jobState === 'queued') return 'queued';
     if (isTaskActivelyProcessing(task)) return 'processing';
     return shouldResumeTask(task) ? 'pending' : (task?.status || 'pending');
 }
@@ -3682,7 +3684,7 @@ function updateActionState(task) {
     els.startBtn.disabled = !task
         || !isTaskDetailLoaded(task)
         || isProcessing
-        || hasActiveServerJobs()
+        || ['queued', 'processing'].includes(task?.jobState)
         || modelStarting
         || (!modelReady && !canStartAfterSwitch && !canDeployMissingModel);
     els.cancelJobBtn?.classList.toggle(
@@ -3692,7 +3694,7 @@ function updateActionState(task) {
     updateCopyButtonState(task);
     els.downloadBtn.disabled = !hasResult;
     const startLabel = startButtonLabel(task);
-    const showProcessing = (isProcessing && task?.status === 'processing') || modelStarting;
+    const showProcessing = isTaskActivelyProcessing(task) || Boolean(modelStarting);
     const startButtonHtml = showProcessing
         ? `<span class="spinner"></span>${modelStarting ? t('模型启动中') : t('解析中')}`
         : `<svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg>${startLabel}`;
@@ -5416,7 +5418,11 @@ function taskIcon(task) {
 function statusText(task) {
     const donePages = task.batches?.filter((batch) => batch.status === 'completed').reduce((sum, batch) => sum + batch.pageCount, 0) || task.completedPages || 0;
     if (task.status === 'completed') return t('完成');
-    if (isTaskActivelyProcessing(task)) return t('{done}/{total} 解析中', { done: donePages, total: task.pageCount || 1 });
+    if (task.jobState === 'queued') return t('排队中');
+    if (isTaskActivelyProcessing(task)) {
+        const eta = Number.isFinite(task.jobEta) ? ` · ~${Math.max(1, Math.round(task.jobEta))}s` : '';
+        return `${t('{done}/{total} 解析中', { done: donePages, total: task.pageCount || 1 })}${eta}`;
+    }
     if (shouldResumeTask(task)) return t('{done}/{total} 可继续', { done: donePages, total: task.pageCount || 1 });
     if (task.status === 'error') return t('失败');
     return t('待解析');

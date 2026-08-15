@@ -1773,3 +1773,7 @@ svg {
     white-space: nowrap;
     flex-shrink: 0;
 }
+
+.task-item.status-queued .task-state {
+    color: #b45309;
+}
