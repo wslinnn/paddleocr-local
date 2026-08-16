@@ -2,6 +2,8 @@
 
 > 2026-08 · 基于当前 main 分支（~12,400 行：server.py 3542 / app.js 6013 / adapter 426 / CSS 1973）
 > 性质：分析记录，非修改任务。
+>
+> **状态更新（2026-08-16）**：重构优先级 1/2/3/6 已实施（未提交时记录于此）——后端接管任务创建与 schema（POST /api/tasks + PATCH + /process 携带意图）、文本单一来源（ppocr 页只存 ocrLines，读取时派生 rec_texts/markdown）、页面图片出 JSON（pages/xxx.jpg + 引用 + 读取端点）、模型代理配置表化（MODEL_OCR_RUNNERS 单表驱动）。优先级 4（拆模块）与 5（前端状态容器化）待做。
 
 ---
 
