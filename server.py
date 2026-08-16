@@ -2976,11 +2976,14 @@ def build_job_batch_payload(task_id: str, task: dict, batch: dict) -> tuple[byte
     source_path = task_source_path(task_id)
     if not source_path.exists():
         raise RuntimeError(f"Task source missing: {task_id}")
-    raw = source_path.read_bytes()
     if file_type == 0 and int(task.get("pageCount") or 1) > 1:
         start = int(batch.get("startPage") or 1)
         end = int(batch.get("endPage") or start)
+        # extract_pdf_pages reads the source itself — don't load the whole
+        # file into memory just to throw it away.
         raw = extract_pdf_pages(source_path, start, end)
+    else:
+        raw = source_path.read_bytes()
     return raw, file_type
 
 

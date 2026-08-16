@@ -1,7 +1,7 @@
 # Third-party notices
 
 Browser assets under `static/vendor/` are vendored copies of upstream npm
-packages (marked, pdfjs-dist, pdf-lib, dompurify, highlight.js, jszip, katex).
+packages (marked, pdfjs-dist, pdf-lib, dompurify, jszip, katex).
 Each vendor directory contains its upstream license. Upstream manages these via
 `package.json` + `scripts/sync-vendor.mjs`; this fork vendors them directly —
 when upgrading, copy the new dist files plus their license into `static/vendor/`

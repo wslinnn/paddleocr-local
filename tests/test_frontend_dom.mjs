@@ -89,7 +89,6 @@ function createBrowser(fetchOverride = null, withI18n = true) {
     };
     window.marked = { parse: (value) => `<p>${value}</p>` };
     window.DOMPurify = { sanitize: (value) => value };
-    window.hljs = { highlightElement() {} };
     window.renderMathInElement = () => {};
     window.JSZip = class {
         file() {}

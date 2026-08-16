@@ -1842,6 +1842,8 @@ async function deleteTask(taskId) {
         return;
     }
     tasks = tasks.filter((item) => item.id !== taskId);
+    sourcePdfCache.delete(taskId);
+    sourceBytesCache.delete(taskId);
 
     if (!wasActive) {
         renderTaskList();
@@ -4188,6 +4190,8 @@ async function clearHistory() {
     }
     tasks = [];
     activeTaskId = null;
+    sourcePdfCache.clear();
+    sourceBytesCache.clear();
     resetWorkbench();
 }
 
