@@ -386,6 +386,41 @@
           }
         }
       },
+      "post": {
+        "summary": "Create Task",
+        "description": "Create a task: upload the source, plan batches, persist the schema.\n\nThe backend owns the task document — it generates the id, computes the\npage count, and groups the selected pages into batches. The browser (or\nAPI client) only states intent: file + model + options.",
+        "operationId": "create_task_api_tasks_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_task_api_tasks_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "summary": "Clear Tasks",
         "description": "Delete all locally persisted tasks.",
@@ -396,6 +431,53 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{task_id}/pages/{page_name}": {
+      "get": {
+        "summary": "Get Task Page Image",
+        "description": "Serve one stored page image (visualization layer backdrop).",
+        "operationId": "get_task_page_image_api_tasks__task_id__pages__page_name__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "page_name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Page Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }
@@ -471,6 +553,52 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Update Task",
+        "description": "Schema-owned partial update: model, parse settings, batch-size replan,\noptional reset for a fresh re-parse. Returns the updated task detail.",
+        "operationId": "update_task_api_tasks__task_id__patch",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskUpdateRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -618,7 +746,7 @@
     "/api/tasks/{task_id}/process": {
       "post": {
         "summary": "Process Task Endpoint",
-        "description": "Enqueue background processing of a task's pending batches (FIFO).",
+        "description": "Apply the requested parse intent (model / settings / batch plan / reset)\nand enqueue background processing of the pending batches (FIFO).",
         "operationId": "process_task_endpoint_api_tasks__task_id__process_post",
         "parameters": [
           {
@@ -631,6 +759,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/TaskProcessRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -968,6 +1113,61 @@
         ],
         "title": "Body_convert_to_pdf_api_convert_to_pdf_post"
       },
+      "Body_create_task_api_tasks_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "modelId": {
+            "type": "string",
+            "title": "Modelid",
+            "default": ""
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "originalName": {
+            "type": "string",
+            "title": "Originalname",
+            "default": ""
+          },
+          "sourceKind": {
+            "type": "string",
+            "title": "Sourcekind",
+            "default": ""
+          },
+          "selectedPages": {
+            "type": "string",
+            "title": "Selectedpages",
+            "default": ""
+          },
+          "pdfBatchSize": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdfbatchsize"
+          },
+          "parseSettings": {
+            "type": "string",
+            "title": "Parsesettings",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_create_task_api_tasks_post"
+      },
       "Body_upload_task_source_api_tasks__task_id__source_post": {
         "properties": {
           "file": {
@@ -1087,6 +1287,100 @@
         },
         "type": "object",
         "title": "TaskCleanupRequest"
+      },
+      "TaskProcessRequest": {
+        "properties": {
+          "resume": {
+            "type": "boolean",
+            "title": "Resume",
+            "default": true
+          },
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelid"
+          },
+          "parseSettings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsesettings"
+          },
+          "pdfBatchSize": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 400.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdfbatchsize"
+          }
+        },
+        "type": "object",
+        "title": "TaskProcessRequest"
+      },
+      "TaskUpdateRequest": {
+        "properties": {
+          "modelId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modelid"
+          },
+          "parseSettings": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parsesettings"
+          },
+          "pdfBatchSize": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 400.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pdfbatchsize"
+          },
+          "reset": {
+            "type": "boolean",
+            "title": "Reset",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "TaskUpdateRequest"
       },
       "UnlimitedOcrBackendRequest": {
         "properties": {

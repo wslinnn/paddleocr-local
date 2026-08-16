@@ -481,6 +481,7 @@ function translateDynamicText(text) {
         [/^不支持的文件格式：(.+)$/, (name) => t('不支持的文件格式：{name}', { name })],
         [/^确定要删除“(.+)”吗？当前操作不可回撤。$/, (name) => t('确定要删除“{name}”吗？当前操作不可回撤。', { name })],
         [/^保存本地任务失败：(.+)$/, (detail) => t('保存本地任务失败：{detail}', { detail })],
+        [/^创建任务失败：(.+)$/, (detail) => t('创建任务失败：{detail}', { detail })],
         [/^读取本地任务失败：(.+)$/, (detail) => t('读取本地任务失败：{detail}', { detail })],
         [/^清空本地任务失败：(.+)$/, (detail) => t('清空本地任务失败：{detail}', { detail })],
         [/^删除本地任务失败：(.+)$/, (detail) => t('删除本地任务失败：{detail}', { detail })],
@@ -1144,14 +1145,6 @@ function updateActiveModelDisplay(task = null) {
     els.activeModelName.textContent = modelShortName(activeModel);
 }
 
-function applySelectedModelToTask(task) {
-    const model = getSelectedModel();
-    task.modelId = model.id;
-    task.modelName = modelDisplayName(model);
-    task.modelEndpoint = model.endpoint;
-    return model;
-}
-
 async function saveTask(task, { includeResults = true } = {}) {
     await saveTaskToServer(task, { includeResults });
 }
@@ -1165,6 +1158,47 @@ async function saveTaskToServer(task, { includeResults = true } = {}) {
     if (!response.ok) {
         throw new Error(t('保存本地任务失败：{detail}', { detail: await responseErrorText(response) }));
     }
+}
+
+// The backend owns the task schema: it generates the id, counts pages and
+// plans batches. The browser only states intent (file + model + options) and
+// consumes the returned task document.
+async function createTaskOnServer(fileOrBlob, options = {}) {
+    const filename = options.name || fileOrBlob.name || 'upload';
+    const source = fileOrBlob instanceof File
+        ? fileOrBlob
+        : new File([fileOrBlob], filename, { type: options.mimeType || fileOrBlob.type || 'application/octet-stream' });
+    const formData = new FormData();
+    formData.append('file', source, filename);
+    formData.append('modelId', options.modelId || getSelectedModel().id);
+    formData.append('name', filename);
+    if (options.originalName) formData.append('originalName', options.originalName);
+    if (options.sourceKind) formData.append('sourceKind', options.sourceKind);
+    if (Array.isArray(options.selectedPages) && options.selectedPages.length > 0) {
+        formData.append('selectedPages', JSON.stringify(options.selectedPages));
+    }
+    if (options.pdfBatchSize) formData.append('pdfBatchSize', String(options.pdfBatchSize));
+    const response = await apiFetch(`${API_BASE}/tasks`, { method: 'POST', body: formData });
+    if (!response.ok) {
+        throw new Error(t('创建任务失败：{detail}', { detail: await responseErrorText(response) }));
+    }
+    const task = await response.json();
+    task.detailLoaded = true;
+    return task;
+}
+
+async function patchTaskOnServer(taskId, payload) {
+    const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(t('保存本地任务失败：{detail}', { detail: await responseErrorText(response) }));
+    }
+    const task = await response.json();
+    task.detailLoaded = true;
+    return task;
 }
 
 async function loadTasks() {
@@ -1353,11 +1387,6 @@ async function handleFiles(files) {
     tasks = [...newTasks, ...tasks];
     renderTaskList();
     await selectTask(newTasks[0].id);
-    const saveResults = await Promise.allSettled(newTasks.map((task) => saveTask(task)));
-    const saveFailures = saveResults.filter((result) => result.status === 'rejected');
-    if (saveFailures.length > 0) {
-        console.warn('Some tasks could not be saved before processing', saveFailures.map((result) => result.reason));
-    }
 
     for (const task of newTasks) {
         // One task's failure to enqueue must never abort the remaining ones.
@@ -1411,37 +1440,7 @@ function assertUploadWithinLimit(fileOrBlob, filename = '') {
 }
 
 async function createImageTask(file) {
-    const id = createId();
-    const dataUrl = await readAsDataUrl(file);
-    const sourceUrl = await uploadTaskSource(id, file, file.name, file.type || 'application/octet-stream');
-    const now = Date.now();
-    const task = {
-        id,
-        name: file.name,
-        sourceKind: 'image',
-        mimeType: file.type || 'image/*',
-        size: file.size,
-        createdAt: now,
-        updatedAt: now,
-        status: 'pending',
-        pageCount: 1,
-        sourceUrl,
-        sourceDataUrl: dataUrl,
-        thumbnail: dataUrl,
-        batches: [{
-            id: createId(),
-            label: formatPageLabel(1),
-            fileType: 1,
-            pageCount: 1,
-            payloadDataUrl: dataUrl,
-            status: 'pending'
-        }],
-        markdown: '',
-        images: {},
-        ocrResults: []
-    };
-    applySelectedModelToTask(task);
-    return task;
+    return createTaskOnServer(file, { sourceKind: 'image' });
 }
 
 function confirmPdfParseOptions(fileOrBlob) {
@@ -1585,58 +1584,13 @@ function confirmPdfParseOptions(fileOrBlob) {
 }
 
 async function createPdfTask(fileOrBlob, name, extra = {}, options = {}) {
-    const id = createId();
-    const arrayBuffer = await fileOrBlob.arrayBuffer();
-    const sourceUrl = await uploadTaskSource(id, fileOrBlob, name, 'application/pdf');
-    const pdf = options.pdfDoc || await pdfjsLib.getDocument({ data: arrayBuffer.slice(0) }).promise;
-    const pageCount = pdf.numPages;
-    const selectedPages = Array.isArray(options.selectedPages) && options.selectedPages.length > 0
-        ? options.selectedPages
-        : null;
-    const thumbnail = await renderPDFPageDataUrl(pdf, selectedPages ? selectedPages[0] : 1, 0.35);
-    const pdfBatchSize = options.batchSize || getConfiguredPdfBatchSize();
-    const batches = createPdfBatchDescriptors(pageCount, pdfBatchSize, '', selectedPages);
-
-    const now = Date.now();
-    const task = {
-        id,
+    return createTaskOnServer(fileOrBlob, {
         name,
+        originalName: extra.originalName,
         sourceKind: extra.sourceKind || 'pdf',
-        originalName: extra.originalName || name,
-        mimeType: 'application/pdf',
-        size: fileOrBlob.size || arrayBuffer.byteLength,
-        createdAt: now,
-        updatedAt: now,
-        status: 'pending',
-        pageCount,
-        pdfBatchSize,
-        sourceUrl,
-        thumbnail,
-        batches,
-        markdown: '',
-        images: {},
-        ocrResults: []
-    };
-    applySelectedModelToTask(task);
-    return task;
-}
-
-async function uploadTaskSource(taskId, fileOrBlob, filename, mimeType) {
-    assertUploadWithinLimit(fileOrBlob, filename);
-    const formData = new FormData();
-    const source = fileOrBlob instanceof File
-        ? fileOrBlob
-        : new File([fileOrBlob], filename, { type: mimeType || fileOrBlob.type || 'application/octet-stream' });
-    formData.append('file', source, filename);
-    const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/source`, {
-        method: 'POST',
-        body: formData
+        selectedPages: options.selectedPages,
+        pdfBatchSize: options.batchSize || getConfiguredPdfBatchSize()
     });
-    if (!response.ok) {
-        throw new Error(t('保存源文件失败：{detail}', { detail: await responseErrorText(response) }));
-    }
-    const data = await response.json();
-    return data.url;
 }
 
 async function convertOfficeToPdf(file) {
@@ -2399,14 +2353,23 @@ async function reloadTaskDetail(task) {
     task.detailLoaded = true;
 }
 
-async function enqueueServerProcessing(task) {
+async function enqueueServerProcessing(task, options = {}) {
     const response = await apiFetch(`${API_BASE}/tasks/${encodeURIComponent(task.id)}/process`, {
-        method: 'POST'
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            resume: Boolean(options.resume),
+            modelId: options.modelId,
+            parseSettings: options.parseSettings,
+            pdfBatchSize: options.pdfBatchSize
+        })
     });
     if (!response.ok) {
         throw new Error(await responseErrorText(response));
     }
     const info = await response.json();
+    if (info.task) Object.assign(task, info.task);
+    task.detailLoaded = true;
     task.jobState = info.state || 'queued';
     task.jobProgress = { done: 0, total: info.batchesTotal || 0 };
     task.queueAhead = info.ahead || 0;
@@ -3526,40 +3489,33 @@ async function processTask(task, { confirmCompleted = true } = {}) {
 
     isProcessing = true;
     try {
-        if (shouldRebuildPdfBatchPlan(task)) {
-            rebuildPdfBatchPlan(task);
-        }
-        if (resumeExistingResults) {
-            task.batches.forEach((batch) => {
-                if (batch.status === 'processing' || batch.status === 'error') batch.status = 'pending';
-            });
-            rebuildTaskResultFromCompletedBatches(task);
-        } else {
-            if (confirmCompleted || !task.modelId) {
-                applySelectedModelToTask(task);
-            }
-            task.markdown = '';
-            task.images = {};
-            task.ocrResults = [];
-            task.batches.forEach((batch) => {
-                batch.status = 'pending';
-                batch.markdown = '';
-            });
-        }
-        task.status = 'processing';
-        task.error = null;
-        task.updatedAt = Date.now();
-
-        if (supportsServerJobs(task)) {
-            // Server-side FIFO queue: persist the plan + settings, enqueue,
-            // and let polling drive the UI. Closing the tab no longer stops OCR.
-            task.parseSettings = collectParseSettings();
-            await saveTask(task);
+        if (serverJobTask) {
+            // Server-side FIFO queue: one call applies the parse intent
+            // (model / settings / batch plan, reset or resume), persists and
+            // enqueues. Closing the tab no longer stops OCR.
             task.jobState = 'queued';
-            await enqueueServerProcessing(task);
+            await enqueueServerProcessing(task, {
+                resume: resumeExistingResults,
+                modelId: targetModel.id,
+                parseSettings: collectParseSettings(),
+                pdfBatchSize: getConfiguredPdfBatchSize()
+            });
             refreshTaskUi(task);
             return;
         }
+
+        // Browser-loop models (Unlimited-OCR / PaddleOCR-VL): the backend owns
+        // the batch plan — ask it to apply the intent, then stream here.
+        const updated = await patchTaskOnServer(task.id, {
+            modelId: targetModel.id,
+            parseSettings: collectParseSettings(),
+            pdfBatchSize: getConfiguredPdfBatchSize(),
+            reset: !resumeExistingResults
+        });
+        Object.assign(task, updated);
+        task.status = 'processing';
+        task.error = null;
+        task.updatedAt = Date.now();
 
         await saveTask(task);
         refreshTaskUi(task);
@@ -3638,30 +3594,6 @@ function isTaskActivelyProcessing(task) {
         || Boolean(task?.batches?.some((batch) => batch.status === 'processing'));
 }
 
-function shouldRebuildPdfBatchPlan(task) {
-    if (!task || !(task.sourceDataUrl || task.sourceUrl) || !['pdf', 'office'].includes(task.sourceKind)) return false;
-    const pageCount = Number(task.pageCount || 0);
-    if (pageCount <= 0) return false;
-    const batches = Array.isArray(task.batches) ? task.batches : [];
-    const completedCount = batches.filter((batch) => batch.status === 'completed').length;
-    if (completedCount > 0) return false;
-    const configuredBatchSize = getConfiguredPdfBatchSize();
-    if (batches.length === 0) return true;
-    if (Number(task.pdfBatchSize || 0) !== configuredBatchSize) return true;
-    return Number(task.pdfBatchSize || 0) > MAX_PDF_BATCH_SIZE
-        || batches.some((batch) => Number(batch.pageCount || 0) > MAX_PDF_BATCH_SIZE);
-}
-
-function rebuildPdfBatchPlan(task) {
-    const pageCount = Number(task.pageCount || 1);
-    const batchSize = getConfiguredPdfBatchSize();
-    task.pdfBatchSize = batchSize;
-    task.batches = createPdfBatchDescriptors(pageCount, batchSize, task.sourceDataUrl, selectedPages);
-    task.markdown = '';
-    task.images = {};
-    task.ocrResults = [];
-}
-
 function taskVisualStatus(task) {
     // Returns a CSS-class token (status-<token>), NOT display text — the label
     // lives in statusText. Terminal disk states are authoritative: an in-memory
@@ -3671,27 +3603,6 @@ function taskVisualStatus(task) {
     if (task?.jobState === 'queued') return 'queued';
     if (isTaskActivelyProcessing(task)) return 'processing';
     return shouldResumeTask(task) ? 'pending' : (task?.status || 'pending');
-}
-
-function rebuildTaskResultFromCompletedBatches(task) {
-    const completedBatches = task.batches.filter((batch) => batch.status === 'completed');
-    if (completedBatches.length === 0) return;
-
-    const existingMarkdown = task.markdown || '';
-    const hasBatchMarkdown = completedBatches.some((batch) => batch.markdown);
-    if (!existingMarkdown && hasBatchMarkdown) {
-        task.markdown = completedBatches
-            .map((batch) => batch.markdown || '')
-            .filter(Boolean)
-            .join('\n\n');
-    }
-
-    if (!task.images || typeof task.images !== 'object') {
-        task.images = {};
-    }
-    if (!Array.isArray(task.ocrResults)) {
-        task.ocrResults = [];
-    }
 }
 
 function appendTaskMarkdown(task, markdown) {
@@ -3812,7 +3723,7 @@ async function callOCR(batch, task) {
     }
     const text = await response.text();
     if (!text.trim()) {
-        throw new Error(t('OCR 服务返回了空响应，请降低每批页数后重试：{label}', { label: batch.label || '' }));
+        throw new Error(t('OCR 服务返回了空响应，请降低每批页数后重试：{label}', { label: batchDisplayLabel(batch) }));
     }
     try {
         return JSON.parse(text);
@@ -3820,7 +3731,7 @@ async function callOCR(batch, task) {
         const preview = text.slice(0, 500);
         throw new Error(
             t('OCR 服务返回的 JSON 不完整或格式异常，请降低每批页数后重试：{label}。响应长度 {length} 字符，片段：{preview}', {
-                label: batch.label || '',
+                label: batchDisplayLabel(batch),
                 length: text.length,
                 preview
             })
@@ -3941,7 +3852,7 @@ async function callStreamingUnlimitedOCR(batch, task, formData, model) {
         if (lastMarkdown && !lastMarkdownWasPlaceholder) {
             return { markdown: lastMarkdown, images: {}, layoutParsingResults: [] };
         }
-        throw new Error(t('OCR 服务返回了空响应，请降低每批页数后重试：{label}', { label: batch.label || '' }));
+        throw new Error(t('OCR 服务返回了空响应，请降低每批页数后重试：{label}', { label: batchDisplayLabel(batch) }));
     }
     return finalResult;
 }
@@ -3990,44 +3901,13 @@ function parseStreamingOCREvent(line) {
     }
 }
 
-function createPdfBatchDescriptors(pageCount, pdfBatchSize, sourceDataUrl = '', selectedPages = null) {
-    // With a page range, group the selected pages into consecutive runs and
-    // chunk each run by the batch size; batches stay contiguous so the
-    // existing per-batch PDF slicing keeps working unchanged.
-    const runs = [];
-    if (selectedPages) {
-        for (const page of selectedPages) {
-            const last = runs[runs.length - 1];
-            if (last && page === last.end + 1) {
-                last.end = page;
-            } else {
-                runs.push({ start: page, end: page });
-            }
-        }
-    } else {
-        runs.push({ start: 1, end: pageCount });
-    }
-
-    const batches = [];
-    for (const run of runs) {
-        for (let startPage = run.start; startPage <= run.end; startPage += pdfBatchSize) {
-            const endPage = Math.min(startPage + pdfBatchSize - 1, run.end);
-            const batch = {
-                id: createId(),
-                label: formatPageLabel(startPage, endPage),
-                fileType: 0,
-                startPage,
-                endPage,
-                pageCount: endPage - startPage + 1,
-                status: 'pending'
-            };
-            if (pageCount === 1 && sourceDataUrl) {
-                batch.payloadDataUrl = sourceDataUrl;
-            }
-            batches.push(batch);
-        }
-    }
-    return batches;
+// The backend stores a neutral batch label; the UI renders a localized one
+// from the batch's page range (covers legacy batches too).
+function batchDisplayLabel(batch) {
+    if (!batch) return '';
+    const start = Number(batch.startPage || 1);
+    const end = Number(batch.endPage || start);
+    return formatPageLabel(start, end);
 }
 
 const EPHEMERAL_TASK_FIELDS = ['jobState', 'jobProgress', 'jobEta', 'queueAhead'];
@@ -4694,17 +4574,6 @@ function scheduleSourceToPPOCRScrollSync() {
     });
 }
 
-async function renderPDFPageDataUrl(pdf, pageNumber, scale) {
-    const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    await page.render({ canvasContext: context, viewport }).promise;
-    return canvas.toDataURL('image/jpeg', 0.78);
-}
-
 async function createPDFBatchBlob(sourcePdf, startPage, endPage) {
     return new Blob([await createPDFBatchBytes(sourcePdf, startPage, endPage)], { type: 'application/pdf' });
 }
@@ -5148,8 +5017,9 @@ function rewriteBlockImageSources(content, pageResult, task) {
 
 function imageValueToSrc(value) {
     const text = String(value || '');
-    if (/^(https?:|data:|blob:)/i.test(text)) return text;
-    if (/^ocr_images\//i.test(text)) return text;
+    // Absolute/relative URLs (e.g. backend-served page images), data: and
+    // blob: sources pass through; anything else is a raw base64 payload.
+    if (/^((https?:|data:|blob:)|\/|ocr_images\/)/i.test(text)) return text;
     return `data:image/jpeg;base64,${text}`;
 }
 
@@ -5791,14 +5661,6 @@ function toOfficialJson(task) {
     return [];
 }
 
-function readAsDataUrl(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-    });
-}
 
 async function waitForImageReady(img) {
     if (!img || (img.complete && img.naturalWidth > 0)) return;
@@ -5895,7 +5757,7 @@ function emptyResultText(task) {
             return t(
                 'OvisOCR2 正在解析{label}，已用时 {seconds} 秒。苹果端逐页处理，完成后会自动显示结果。',
                 {
-                    label: batch.label || '',
+                    label: batchDisplayLabel(batch),
                     seconds: taskProgressSeconds(task)
                 }
             );
@@ -6008,6 +5870,3 @@ function safeDownloadName(name, ext) {
     return `${name.replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]/g, '_')}.${ext}`;
 }
 
-function createId() {
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}

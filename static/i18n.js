@@ -154,6 +154,7 @@ window.PANDOCR_I18N = {
             '模型启动超时': 'Model startup timed out',
             '保存本地任务失败': 'Failed to save local task',
             '保存本地任务失败：{detail}': 'Failed to save local task: {detail}',
+            '创建任务失败：{detail}': 'Failed to create task: {detail}',
             '上次解析中断，可继续解析。': 'Last parsing run was interrupted and can be resumed.',
             '正在加载任务': 'Loading task',
             '正在加载本地任务详情...': 'Loading local task details...',

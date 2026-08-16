@@ -2,15 +2,21 @@
 
 ## 本仓库扩展 API（后台任务队列）
 
-WebUI 的解析任务走服务端 FIFO 后台队列（text-OCR 模型）：
+WebUI 的解析任务走服务端 FIFO 后台队列（text-OCR 模型）。任务 schema 由后端拥有：
+**服务端生成任务 ID、统计页数、规划批次**，调用方只表达意图（文件 + 模型 + 选项）。
 
 | 端点 | 方法 | 说明 |
-| --- | --- |
-| `/api/tasks/{id}/process` | POST | 将任务的待处理批次入队（幂等），返回排队位置与批次总数 |
+| --- | --- | --- |
+| `/api/tasks` | POST | 创建任务（multipart：`file` + `modelId` 等表单字段），服务端生成 ID、切批并持久化，返回 201 + 完整任务 |
+| `/api/tasks/{id}` | PATCH | 部分更新（`modelId` / `parseSettings` / `pdfBatchSize` 重切批 / `reset` 重置），返回更新后的任务 |
+| `/api/tasks/{id}/process` | POST | 入队（幂等）。可选 JSON body：`{resume, modelId, parseSettings, pdfBatchSize}`——入队前原子应用解析意图 |
 | `/api/tasks/{id}/status` | GET | 轮询进度（~1.5s）：状态、已完成批次、当前批次、ETA、每批状态 |
 | `/api/tasks/{id}/cancel` | POST | 批间取消；未开始的批次保持可恢复 |
+| `/api/tasks/{id}/pages/{name}` | GET | 读取任务的可视化页面图片（JPEG，与 OCR 坐标空间对齐） |
 
-另有任务源文件上传、分页读取、存储统计与清理等任务管理端点。完整端点以运行时 schema 为准：设置 `PANDOCR_ENABLE_API_DOCS=1` 后访问 `/docs`，或直接读取 `/api/openapi.json`。
+`POST /api/tasks` 主要表单字段：`file`（必填）、`modelId`（必填）、`name`、`sourceKind`（image/pdf/office）、`selectedPages`（JSON 数组，如 `[1,2,5]`）、`pdfBatchSize`（1-400，默认 1）、`parseSettings`（JSON 对象，白名单字段）。
+
+另有任务源文件上传、分页读取、存储统计与清理等任务管理端点（`PUT /api/tasks/{id}` 全量更新仍可用于人工修正识别文本）。完整端点以运行时 schema 为准：设置 `PANDOCR_ENABLE_API_DOCS=1` 后访问 `/docs`，或直接读取 `/api/openapi.json`。
 
 ## 调用示例
 
@@ -19,33 +25,18 @@ WebUI 的解析任务走服务端 FIFO 后台队列（text-OCR 模型）：
 ```bash
 BASE=http://localhost:8000
 
-# 1. 创建任务（任务 ID 需自备：6-80 字符的字母/数字/连字符）
-TASK_ID="mydoc_$(date +%s)"
+# 1. 创建任务：上传源文件，服务端计数页数并切批（每批 2 页，只解析第 1-3、5 页）
+CREATE=$(curl -s -X POST "$BASE/api/tasks" \
+  -F "file=@document.pdf" \
+  -F "modelId=pp-ocrv6-rapid" \
+  -F "pdfBatchSize=2" \
+  -F 'selectedPages=[1,2,3,5]')
+TASK_ID=$(echo "$CREATE" | jq -r .id)
 
-# 上传源文件（PDF 或图片）
-curl -X POST "$BASE/api/tasks/$TASK_ID/source" \
-  -F "file=@document.pdf"
-
-# 保存任务元数据（含分批计划与解析设置）
-curl -X PUT "$BASE/api/tasks/$TASK_ID" \
+# 2. 入队（可选 body 原子应用模型/设置/批大小；返回 {"queued":true,"state":"queued","ahead":0,"batchesTotal":2,...}）
+curl -X POST "$BASE/api/tasks/$TASK_ID/process" \
   -H "Content-Type: application/json" \
-  -d '{
-    "id": "'$TASK_ID'",
-    "name": "document.pdf",
-    "sourceKind": "pdf",
-    "modelId": "pp-ocrv6-rapid",
-    "status": "pending",
-    "pageCount": 3,
-    "batches": [
-      {"id": "b1", "label": "第 1 页", "fileType": 0, "startPage": 1, "endPage": 1, "pageCount": 1, "status": "pending"},
-      {"id": "b2", "label": "第 2 页", "fileType": 0, "startPage": 2, "endPage": 2, "pageCount": 1, "status": "pending"},
-      {"id": "b3", "label": "第 3 页", "fileType": 0, "startPage": 3, "endPage": 3, "pageCount": 1, "status": "pending"}
-    ],
-    "parseSettings": {"useTextlineOrientation": false}
-  }'
-
-# 2. 入队（返回 {"queued":true,"state":"queued","ahead":0,"batchesTotal":3}）
-curl -X POST "$BASE/api/tasks/$TASK_ID/process"
+  -d '{"resume": false, "parseSettings": {"useChartRecognition": true}}'
 
 # 3. 轮询直到 state 变为 completed / error / cancelled
 watch -n 2 "curl -s $BASE/api/tasks/$TASK_ID/status | jq '{state, batchesDone, batchesTotal, etaSeconds}'"
@@ -69,32 +60,25 @@ import time
 import httpx
 
 BASE = "http://localhost:8000"
-TASK_ID = "pydoc_001"
 
 client = httpx.Client(base_url=BASE, timeout=30)
 
-# 1. 上传 + 保存
+# 1. 创建任务：一次调用完成上传、页数统计与切批
 with open("document.pdf", "rb") as f:
-    client.post(f"/api/tasks/{TASK_ID}/source", files={"file": f})
+    task = client.post(
+        "/api/tasks",
+        files={"file": f},
+        data={"modelId": "pp-ocrv6-rapid", "pdfBatchSize": "1"},
+    ).json()
+task_id = task["id"]
+print(f"created {task_id}: {task['pageCount']} pages, {len(task['batches'])} batches")
 
-client.put(f"/api/tasks/{TASK_ID}", json={
-    "id": TASK_ID,
-    "name": "document.pdf",
-    "sourceKind": "pdf",
-    "modelId": "pp-ocrv6-rapid",
-    "status": "pending",
-    "pageCount": 1,
-    "batches": [{"id": "b1", "label": "第 1 页", "fileType": 0,
-                 "startPage": 1, "endPage": 1, "pageCount": 1, "status": "pending"}],
-    "parseSettings": {},
-})
-
-# 2. 入队
-client.post(f"/api/tasks/{TASK_ID}/process")
+# 2. 入队（resume=False 表示从头解析；不传 body 则续跑未完成批次）
+client.post(f"/api/tasks/{task_id}/process", json={"resume": False})
 
 # 3. 轮询
 while True:
-    status = client.get(f"/api/tasks/{TASK_ID}/status").json()
+    status = client.get(f"/api/tasks/{task_id}/status").json()
     print(f"state={status['state']}  {status['batchesDone']}/{status['batchesTotal']}"
           f"  eta={status.get('etaSeconds')}s")
     if status["state"] in ("completed", "error", "cancelled"):
@@ -106,7 +90,7 @@ if status["state"] == "completed":
     for fmt, name in [("searchable-pdf", "result_searchable.pdf"),
                       ("pdf", "result_reflowed.pdf"),
                       ("docx", "result.docx")]:
-        resp = client.get(f"/api/tasks/{TASK_ID}/export?format={fmt}")
+        resp = client.get(f"/api/tasks/{task_id}/export?format={fmt}")
         with open(name, "wb") as f:
             f.write(resp.content)
         print(f"saved {name} ({len(resp.content)} bytes)")

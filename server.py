@@ -19,7 +19,7 @@ from pathlib import Path
 from PIL import Image
 from typing import List, Optional, Union
 from urllib.parse import quote, urlsplit
-from fastapi import FastAPI, HTTPException, File, UploadFile, Query, Request
+from fastapi import FastAPI, HTTPException, File, Form, UploadFile, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, JSONResponse, StreamingResponse
@@ -1440,6 +1440,355 @@ def task_source_url(task_id: str) -> str:
     return f"/api/tasks/{safe_task_id(task_id)}/source"
 
 
+# --- Task schema ownership (backend-created tasks) ----------------------------
+# The backend is the schema's owner: it generates task ids, plans batches from
+# the page selection, and normalizes stored pages (single text source, page
+# images as files). The browser only sends intent (file + model + options) and
+# consumes the task documents this layer produces.
+
+MAX_TASK_PDF_BATCH_SIZE = 400
+PPOCR_MODEL_IDS = {"pp-ocrv6", "pp-ocrv6-rapid"}
+PPOCR_PARSER_IDS = {"pp-ocrv6", "pp-ocrv6-rapid"}
+
+
+def generate_task_id() -> str:
+    return secrets.token_hex(8)
+
+
+def generate_batch_id() -> str:
+    return f"b-{secrets.token_hex(4)}"
+
+
+def count_pdf_pages(file_bytes: bytes) -> int:
+    from pypdf import PdfReader
+
+    try:
+        return len(PdfReader(io.BytesIO(file_bytes)).pages)
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="Unsupported or corrupt PDF") from err
+
+
+def parse_selected_pages(raw: str | None, page_count: int) -> list[int] | None:
+    """Validate a JSON page-selection array; None/empty means all pages."""
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        pages = json.loads(raw)
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="selectedPages must be a JSON array") from err
+    if not isinstance(pages, list):
+        raise HTTPException(status_code=400, detail="selectedPages must be a JSON array")
+    selected = sorted({int(page) for page in pages})
+    if not selected:
+        return None
+    if selected[0] < 1 or selected[-1] > page_count:
+        raise HTTPException(status_code=400, detail=f"selectedPages out of range for {page_count} pages")
+    return selected
+
+
+def clamp_pdf_batch_size(value: int | None, default: int = 1) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="pdfBatchSize must be an integer")
+    return max(1, min(MAX_TASK_PDF_BATCH_SIZE, parsed))
+
+
+def build_batch_plan(page_count: int, batch_size: int, selected_pages: list[int] | None) -> list[dict]:
+    """Group the selected pages into contiguous runs, chunk each run by batch
+    size — batches stay contiguous so per-batch PDF slicing keeps working."""
+    runs: list[dict] = []
+    if selected_pages:
+        for page in selected_pages:
+            if runs and page == runs[-1]["end"] + 1:
+                runs[-1]["end"] = page
+            else:
+                runs.append({"start": page, "end": page})
+    else:
+        runs.append({"start": 1, "end": page_count})
+
+    batches = []
+    for run in runs:
+        start_page = run["start"]
+        while start_page <= run["end"]:
+            end_page = min(start_page + batch_size - 1, run["end"])
+            batches.append({
+                "id": generate_batch_id(),
+                # Neutral label (logs); the UI renders a localized label from
+                # startPage/endPage.
+                "label": str(start_page) if start_page == end_page else f"{start_page}-{end_page}",
+                "fileType": 0,
+                "startPage": start_page,
+                "endPage": end_page,
+                "pageCount": end_page - start_page + 1,
+                "status": "pending",
+            })
+            start_page = end_page + 1
+    return batches
+
+
+def build_image_batch() -> list[dict]:
+    return [{
+        "id": generate_batch_id(),
+        "label": "1",
+        "fileType": 1,
+        "startPage": 1,
+        "endPage": 1,
+        "pageCount": 1,
+        "status": "pending",
+    }]
+
+
+def filter_parse_settings(payload) -> dict:
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="parseSettings must be a JSON object")
+    return {key: value for key, value in payload.items() if key in OCR_REQUEST_SETTING_FIELDS}
+
+
+def catalog_model(model_id: str) -> dict:
+    model = next((entry for entry in model_catalog() if entry["id"] == model_id), None)
+    if model is None:
+        raise HTTPException(status_code=400, detail=f"Unknown model id: {model_id}")
+    return model
+
+
+def apply_task_update(
+    task: dict,
+    *,
+    model_id: str | None = None,
+    parse_settings=None,
+    pdf_batch_size: int | None = None,
+    reset: bool = False,
+) -> bool:
+    """Apply schema-owned task updates in place (model, parse settings, batch
+    plan). reset=True re-parses from scratch (all batches pending, results and
+    page images cleared); otherwise interrupted batches become pending again
+    (resume semantics). Returns True when anything changed — callers skip the
+    disk write otherwise (concurrent writers corrupt task.json on Windows)."""
+    changed = False
+    if model_id is not None:
+        model = catalog_model(model_id)
+        if task.get("modelId") != model["id"] or task.get("modelName") != model["name"]:
+            task["modelId"] = model["id"]
+            task["modelName"] = model["name"]
+            changed = True
+    if parse_settings is not None:
+        filtered = filter_parse_settings(parse_settings)
+        if task.get("parseSettings") != filtered:
+            task["parseSettings"] = filtered
+            changed = True
+
+    batches = task.get("batches") if isinstance(task.get("batches"), list) else []
+
+    if reset:
+        for batch in batches:
+            if not isinstance(batch, dict):
+                continue
+            if batch.get("status") != "pending":
+                batch["status"] = "pending"
+                changed = True
+            batch.pop("error", None)
+            batch.pop("markdown", None)
+        task["ocrResults"] = []
+        task["images"] = {}
+        task["markdown"] = ""
+        task["error"] = None
+        pages_dir = task_pages_dir(task.get("id") or "")
+        if pages_dir.exists():
+            shutil.rmtree(pages_dir, ignore_errors=True)
+        changed = True
+    else:
+        for batch in batches:
+            if isinstance(batch, dict) and batch.get("status") in ("processing", "error"):
+                batch["status"] = "pending"
+                batch.pop("error", None)
+                changed = True
+
+    has_completed = any(isinstance(b, dict) and b.get("status") == "completed" for b in batches)
+    if task.get("sourceKind") in ("pdf", "office") and not has_completed:
+        current_size = int(task.get("pdfBatchSize") or 0)
+        oversized = any(
+            isinstance(b, dict) and int(b.get("pageCount") or 0) > MAX_TASK_PDF_BATCH_SIZE
+            for b in batches
+        )
+        if pdf_batch_size is not None:
+            target_size = clamp_pdf_batch_size(pdf_batch_size)
+            if not batches or current_size != target_size or oversized:
+                task["batches"] = build_batch_plan(
+                    int(task.get("pageCount") or 1), target_size, task.get("selectedPages")
+                )
+                task["pdfBatchSize"] = target_size
+                changed = True
+    return changed
+
+
+# --- Page images as files ------------------------------------------------------
+# Page JPEGs used to be base64-embedded in result.json (MB-scale). They now
+# live as files under <task>/pages/; result.json stores the relative path and
+# hydrate rewrites it to a servable URL. Legacy inline data URLs still work.
+
+
+def task_pages_dir(task_id: str) -> Path:
+    return task_dir_path(task_id) / "pages"
+
+
+def page_image_url_pattern(task_id: str) -> str:
+    return f"/api/tasks/{safe_task_id(task_id)}/pages/"
+
+
+def write_page_image_file(task_id: str, source_page: int, data_url: str) -> str:
+    payload = data_url.split(",", 1)[1] if "," in data_url else data_url
+    try:
+        image_bytes = base64.b64decode(payload, validate=True)
+    except Exception as err:
+        raise ValueError("Invalid page image payload") from err
+    pages_dir = task_pages_dir(task_id)
+    pages_dir.mkdir(parents=True, exist_ok=True)
+    relative = f"pages/p{max(1, int(source_page)):04d}.jpg"
+    (task_dir_path(task_id) / relative).write_bytes(image_bytes)
+    return relative
+
+
+def normalize_task_page_images(task_id: str, task: dict) -> None:
+    """Move inline page images to files and URL forms back to relative paths,
+    so result.json only ever stores a small reference."""
+    pages = task.get("ocrResults")
+    if not isinstance(pages, list):
+        return
+    url_prefix = page_image_url_pattern(task_id)
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        value = page.get("pageImage")
+        if isinstance(value, str) and value.startswith("data:"):
+            source_page = page.get("sourcePage") or page.get("page_index") or 1
+            page["pageImage"] = write_page_image_file(task_id, int(source_page), value)
+            page.pop("inputImage", None)
+        elif isinstance(value, str) and value.startswith(url_prefix):
+            page["pageImage"] = f"pages/{value[len(url_prefix):]}"
+        inline = page.get("inputImage")
+        if isinstance(inline, str) and inline.startswith("data:") and not page.get("pageImage"):
+            source_page = page.get("sourcePage") or page.get("page_index") or 1
+            page["pageImage"] = write_page_image_file(task_id, int(source_page), inline)
+            page.pop("inputImage", None)
+
+
+def hydrate_page_image(task_id: str, page: dict) -> None:
+    value = page.get("pageImage")
+    if isinstance(value, str) and value.startswith("pages/"):
+        page["pageImage"] = page_image_url_pattern(task_id) + value[len("pages/"):]
+    elif not value and isinstance(page.get("inputImage"), str) and page["inputImage"].startswith("pages/"):
+        page["pageImage"] = page_image_url_pattern(task_id) + page.pop("inputImage")[len("pages/"):]
+
+
+def read_page_image_bytes(task_id: str, page: dict) -> bytes | None:
+    """Decode a page's source image from either storage form (file ref or
+    legacy inline data URL)."""
+    value = page.get("pageImage") or page.get("inputImage")
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith("data:"):
+        payload = value.split(",", 1)[1] if "," in value else value
+        try:
+            return base64.b64decode(payload)
+        except Exception:
+            return None
+    name = value.rsplit("/", 1)[-1]
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        return None
+    path = task_pages_dir(task_id) / name
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def page_image_size(task_id: str, page: dict) -> tuple[int, int] | None:
+    image_bytes = read_page_image_bytes(task_id, page)
+    if image_bytes is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+# --- Single text source for ppocr pages ----------------------------------------
+# For the pp-ocr family, ocrLines[].text is the only stored text. rec_texts
+# and page/task markdown are derived at hydrate time (same joining convention
+# the exports use: lines by \n, pages by \n\n).
+
+
+def is_ppocr_page(page: dict) -> bool:
+    return isinstance(page, dict) and page.get("parser") in PPOCR_PARSER_IDS
+
+
+def strip_ppocr_text_duplicates(task: dict) -> None:
+    """Storage normalization: drop derived text from ppocr pages."""
+    pages = task.get("ocrResults")
+    if not isinstance(pages, list):
+        return
+    for page in pages:
+        if not is_ppocr_page(page):
+            continue
+        page.pop("markdown", None)
+        pruned = page.get("prunedResult")
+        if isinstance(pruned, dict):
+            pruned.pop("rec_texts", None)
+
+
+def derive_ppocr_page_text(page: dict) -> str | None:
+    """Regenerate rec_texts + page markdown from ocrLines; returns the page
+    markdown text (or None for non-ppocr pages)."""
+    if not is_ppocr_page(page):
+        return None
+    lines = page.get("ocrLines") if isinstance(page.get("ocrLines"), list) else None
+    pruned = page.get("prunedResult") if isinstance(page.get("prunedResult"), dict) else {}
+    if lines is not None:
+        texts = [str(line.get("text") or "") for line in lines if isinstance(line, dict)]
+    else:
+        stored = pruned.get("rec_texts")
+        texts = [str(text) for text in stored] if isinstance(stored, list) else []
+    pruned["rec_texts"] = texts
+    page["prunedResult"] = pruned
+    markdown_text = "\n".join(text for text in texts if text)
+    page["markdown"] = {"text": markdown_text, "images": {}}
+    return markdown_text
+
+
+def derive_task_markdown(task: dict) -> None:
+    """For tasks with ppocr pages, the task markdown is derived — a stored
+    snapshot (if any) is replaced by the ocrLines-derived text."""
+    pages = task.get("ocrResults")
+    if not isinstance(pages, list):
+        return
+    parts: list[str] = []
+    saw_ppocr = False
+    for page in pages:
+        if not is_ppocr_page(page):
+            continue
+        saw_ppocr = True
+        lines = page.get("ocrLines") if isinstance(page.get("ocrLines"), list) else None
+        if lines is None:
+            stored_markdown = page.get("markdown")
+            text = stored_markdown.get("text", "") if isinstance(stored_markdown, dict) else ""
+        else:
+            text = "\n".join(
+                str(line.get("text") or "")
+                for line in lines
+                if isinstance(line, dict) and line.get("text")
+            )
+        if text:
+            parts.append(text)
+    if saw_ppocr:
+        task["markdown"] = "\n\n".join(parts)
+
+
 def split_task_for_storage(task: dict) -> tuple[dict, dict | None]:
     """Keep task.json as metadata and move heavy OCR results into result.json."""
     task_id = task.get("id")
@@ -1455,7 +1804,11 @@ def split_task_for_storage(task: dict) -> tuple[dict, dict | None]:
     result_payload = {}
     for key in ("markdown", "images", "ocrResults"):
         if key in stored:
-            result_payload[key] = stored.pop(key)
+            value = stored.pop(key)
+            # Drop empty text/image maps: ppocr tasks keep no markdown snapshot
+            # at all, so result.json stays free of placeholder keys.
+            if value or key == "ocrResults":
+                result_payload[key] = value
 
     if has_external_source:
         stored["sourceUrl"] = source_url or task_source_url(task_id)
@@ -1587,6 +1940,8 @@ def write_json_file(path: Path, payload: dict) -> None:
 
 def write_task_bundle(task_id: str, task: dict) -> dict:
     ensure_task_data_dir()
+    normalize_task_page_images(task_id, task)
+    strip_ppocr_text_duplicates(task)
     stored_task, result_payload = split_task_for_storage(task)
     task_dir = task_dir_path(task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -1629,6 +1984,15 @@ def hydrate_task_detail(task_id: str, task: dict) -> dict:
                         batch["markdown"] = batch_markdown[batch["id"]]
         except (OSError, ValueError, json.JSONDecodeError) as err:
             logger.warning("Failed to hydrate task result %s: %s", result_path, err)
+
+    pages = task.get("ocrResults") if isinstance(task.get("ocrResults"), list) else None
+    if pages:
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            derive_ppocr_page_text(page)
+            hydrate_page_image(task_id, page)
+        derive_task_markdown(task)
 
     task.setdefault("markdown", "")
     task.setdefault("images", {})
@@ -1845,6 +2209,102 @@ async def get_task_source_pages(
     return Response(content=pdf_content, media_type="application/pdf")
 
 
+TASK_SOURCE_KINDS = {"image", "pdf", "office"}
+
+
+def parse_settings_payload(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except Exception as err:
+        raise HTTPException(status_code=400, detail="parseSettings must be a JSON object") from err
+    return filter_parse_settings(payload)
+
+
+@app.post("/api/tasks", status_code=201)
+async def create_task(
+    file: UploadFile = File(...),
+    modelId: str = Form(default=""),
+    name: str = Form(default=""),
+    originalName: str = Form(default=""),
+    sourceKind: str = Form(default=""),
+    selectedPages: str = Form(default=""),
+    pdfBatchSize: Optional[int] = Form(default=None),
+    parseSettings: str = Form(default=""),
+):
+    """Create a task: upload the source, plan batches, persist the schema.
+
+    The backend owns the task document — it generates the id, computes the
+    page count, and groups the selected pages into batches. The browser (or
+    API client) only states intent: file + model + options."""
+    model = catalog_model(modelId)
+    task_id = generate_task_id()
+    task_dir = task_dir_path(task_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+    source_path = task_source_path(task_id)
+    temp_path = source_path.with_suffix(".tmp")
+    try:
+        size = await write_upload_to_path(file, temp_path, MAX_REQUEST_BYTES)
+        temp_path.replace(source_path)
+
+        def inspect_source() -> tuple[bool, int]:
+            with source_path.open("rb") as source_file:
+                is_pdf = source_file.read(5) == b"%PDF-"
+            page_count = count_pdf_pages(source_path.read_bytes()) if is_pdf else 1
+            return is_pdf, page_count
+
+        is_pdf, page_count = await run_in_threadpool(inspect_source)
+        kind = sourceKind if sourceKind in TASK_SOURCE_KINDS else ("pdf" if is_pdf else "image")
+        mime_type = file.content_type or ("application/pdf" if is_pdf else "application/octet-stream")
+        selected = parse_selected_pages(selectedPages, page_count)
+        batch_size = clamp_pdf_batch_size(pdfBatchSize, default=1)
+        batches = build_batch_plan(page_count, batch_size, selected) if is_pdf else build_image_batch()
+
+        now = int(time.time() * 1000)
+        task = {
+            "id": task_id,
+            "name": name or Path(file.filename or "upload").name,
+            "sourceKind": kind,
+            "mimeType": mime_type,
+            "size": size,
+            "createdAt": now,
+            "updatedAt": now,
+            "status": "pending",
+            "pageCount": page_count,
+            "sourceUrl": task_source_url(task_id),
+            "modelId": model["id"],
+            "modelName": model["name"],
+            "batches": batches,
+        }
+        if originalName:
+            task["originalName"] = originalName
+        if is_pdf:
+            task["pdfBatchSize"] = batch_size
+            if selected is not None:
+                task["selectedPages"] = selected
+        settings = parse_settings_payload(parseSettings)
+        if settings:
+            task["parseSettings"] = settings
+        stored = await run_in_threadpool(write_task_bundle, task_id, task)
+    except HTTPException:
+        shutil.rmtree(task_dir, ignore_errors=True)
+        raise
+    return hydrate_task_detail(task_id, stored)
+
+
+@app.get("/api/tasks/{task_id}/pages/{page_name}")
+async def get_task_page_image(task_id: str, page_name: str):
+    """Serve one stored page image (visualization layer backdrop)."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", page_name or ""):
+        raise HTTPException(status_code=400, detail="Invalid page image name")
+    path = task_pages_dir(task_id) / page_name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Page image not found")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
 @app.get("/api/tasks")
 async def list_tasks():
     """List locally persisted document parsing task summaries."""
@@ -1962,26 +2422,21 @@ def find_cjk_font() -> str | None:
     return None
 
 
-def export_page_size(page: dict, boxes: list) -> tuple[int, int]:
+def export_page_size(task_id: str, page: dict, boxes: list) -> tuple[int, int]:
     """Page pixel dimensions for the reflowed PDF.
 
-    Prefer the real inputImage dimensions so text box coords align exactly;
+    Prefer the real page-image dimensions so text box coords align exactly;
     fall back to the largest box coordinate when the image is unavailable.
     """
-    page_image = page.get("pageImage") or page.get("inputImage")
-    if isinstance(page_image, str) and page_image:
-        try:
-            payload = page_image.split(",", 1)[1] if "," in page_image else page_image
-            with Image.open(io.BytesIO(base64.b64decode(payload))) as img:
-                return img.size
-        except Exception:
-            pass
+    size = page_image_size(task_id, page)
+    if size is not None:
+        return size
     max_x = max((float(b[2]) for b in boxes if isinstance(b, (list, tuple)) and len(b) >= 4), default=612.0)
     max_y = max((float(b[3]) for b in boxes if isinstance(b, (list, tuple)) and len(b) >= 4), default=792.0)
     return int(max_x), int(max_y)
 
 
-def build_relaid_pdf(ocr_results: list) -> bytes:
+def build_relaid_pdf(task_id: str, ocr_results: list) -> bytes:
     """Generate a reflowed PDF: white background + OCR text positioned by rec_boxes.
 
     Each detected text box becomes selectable/searchable vector text placed at
@@ -1996,7 +2451,7 @@ def build_relaid_pdf(ocr_results: list) -> bytes:
         pruned = page_dict.get("prunedResult") or page_dict
         boxes = pruned.get("rec_boxes") or []
         texts = pruned.get("rec_texts") or []
-        width, height = export_page_size(page_dict, boxes)
+        width, height = export_page_size(task_id, page_dict, boxes)
         pdf_page = doc.new_page(width=width, height=height)
         for box, text in zip(boxes, texts):
             if not text or not isinstance(box, (list, tuple)) or len(box) < 4:
@@ -2029,24 +2484,12 @@ def build_relaid_pdf(ocr_results: list) -> bytes:
     return buffer.getvalue()
 
 
-def page_image_bytes(page: dict) -> bytes | None:
-    """Decode the page's source image (the exact image OCR ran on)."""
-    page_image = page.get("pageImage") or page.get("inputImage")
-    if not isinstance(page_image, str) or not page_image:
-        return None
-    try:
-        payload = page_image.split(",", 1)[1] if "," in page_image else page_image
-        return base64.b64decode(payload)
-    except Exception:
-        return None
-
-
-def build_searchable_pdf(ocr_results: list) -> bytes:
+def build_searchable_pdf(task_id: str, ocr_results: list) -> bytes:
     """Generate a searchable PDF: original page images + invisible text layer.
 
     Keeps the original look (image layer) while making the content
     selectable, copyable, and full-text searchable (render_mode 3 text placed
-    at each rec_box). Coordinates align exactly because pageImage IS the
+    at each rec_box). Coordinates align exactly because the page image IS the
     image OCR ran on.
     """
     import fitz
@@ -2059,7 +2502,7 @@ def build_searchable_pdf(ocr_results: list) -> bytes:
     doc = fitz.open()
     for page in ocr_results:
         page_dict = page if isinstance(page, dict) else {}
-        image_bytes = page_image_bytes(page_dict)
+        image_bytes = read_page_image_bytes(task_id, page_dict)
         if image_bytes is None:
             raise HTTPException(
                 status_code=400,
@@ -2157,10 +2600,10 @@ async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf|se
             headers={"Content-Disposition": f'attachment; filename="{safe_task_id(task_id)}.docx"'},
         )
     if format == "searchable-pdf":
-        pdf_bytes = await run_in_threadpool(build_searchable_pdf, ocr_results)
+        pdf_bytes = await run_in_threadpool(build_searchable_pdf, task_id, ocr_results)
         filename = f"{safe_task_id(task_id)}-searchable.pdf"
     else:
-        pdf_bytes = await run_in_threadpool(build_relaid_pdf, ocr_results)
+        pdf_bytes = await run_in_threadpool(build_relaid_pdf, task_id, ocr_results)
         filename = f"{safe_task_id(task_id)}.pdf"
     return Response(
         content=pdf_bytes,
@@ -2180,6 +2623,35 @@ async def save_task(task_id: str, request: Request):
 
     stored_task = await run_in_threadpool(write_task_bundle, task_id, task)
     return {"ok": True, "task": task_summary(stored_task)}
+
+
+class TaskUpdateRequest(BaseModel):
+    modelId: Optional[str] = None
+    parseSettings: Optional[dict] = None
+    pdfBatchSize: Optional[int] = Field(default=None, ge=1, le=MAX_TASK_PDF_BATCH_SIZE)
+    reset: bool = False
+
+
+@app.patch("/api/tasks/{task_id}")
+async def update_task(task_id: str, request: TaskUpdateRequest):
+    """Schema-owned partial update: model, parse settings, batch-size replan,
+    optional reset for a fresh re-parse. Returns the updated task detail."""
+    path = task_file_path(task_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Task not found")
+    task = hydrate_task_detail(task_id, await run_in_threadpool(read_task_file, path))
+    changed = apply_task_update(
+        task,
+        model_id=request.modelId,
+        parse_settings=request.parseSettings,
+        pdf_batch_size=request.pdfBatchSize,
+        reset=request.reset,
+    )
+    if not changed:
+        return task
+    task["updatedAt"] = int(time.time() * 1000)
+    stored = await run_in_threadpool(write_task_bundle, task_id, task)
+    return hydrate_task_detail(task_id, stored)
 
 
 @app.delete("/api/tasks/{task_id}")
@@ -2319,11 +2791,13 @@ OCR_REQUEST_SETTING_FIELDS = {
 
 
 def task_model_runner(model_id: str):
-    return {
-        "pp-ocrv6-rapid": run_rapidocr_request,
-        "pp-ocrv6": run_ppocrv6_request,
-        "ovisocr2": run_ovisocr2_request,
-    }.get(model_id)
+    if model_id not in TASK_MODEL_IDS:
+        return None
+
+    async def runner(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
+        return await run_model_request(model_id, ocr_request, raw_input)
+
+    return runner
 
 
 def ensure_task_job(task_id: str) -> dict:
@@ -2519,10 +2993,12 @@ async def run_task_job(task_id: str) -> None:
                 page["batchId"] = batch.get("id")
                 page["sourcePage"] = int(batch.get("startPage") or 1) + page_index
                 task["ocrResults"].append(page)
-            batch_markdown = result.get("markdown") or ""
+            # ppocr text is derived from ocrLines at read time — no markdown
+            # snapshot is stored for those models (single text source).
+            batch_markdown = "" if model_id in PPOCR_MODEL_IDS else (result.get("markdown") or "")
             batch["status"] = "completed"
-            batch["markdown"] = batch_markdown
             if batch_markdown:
+                batch["markdown"] = batch_markdown
                 task["markdown"] = "\n\n".join(part for part in (task.get("markdown"), batch_markdown) if part)
             task["images"].update(result.get("images") or {})
             task["updatedAt"] = int(time.time() * 1000)
@@ -2576,26 +3052,49 @@ async def run_task_job(task_id: str) -> None:
                 task_id, job["batchesDone"], job["batchesTotal"], time.perf_counter() - job_started)
 
 
+class TaskProcessRequest(BaseModel):
+    # Default resume=True preserves the body-less contract: process whatever
+    # batches are still pending. resume=False resets the task first (re-parse
+    # from scratch, possibly with a new batch size / model / settings).
+    resume: bool = True
+    modelId: Optional[str] = None
+    parseSettings: Optional[dict] = None
+    pdfBatchSize: Optional[int] = Field(default=None, ge=1, le=MAX_TASK_PDF_BATCH_SIZE)
+
+
 @app.post("/api/tasks/{task_id}/process")
-async def process_task_endpoint(task_id: str):
-    """Enqueue background processing of a task's pending batches (FIFO)."""
+async def process_task_endpoint(task_id: str, request: TaskProcessRequest | None = None):
+    """Apply the requested parse intent (model / settings / batch plan / reset)
+    and enqueue background processing of the pending batches (FIFO)."""
     path = task_file_path(task_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Task not found")
+    payload = request or TaskProcessRequest()
     task = hydrate_task_detail(task_id, await run_in_threadpool(read_task_file, path))
+    changed = apply_task_update(
+        task,
+        model_id=payload.modelId,
+        parse_settings=payload.parseSettings,
+        pdf_batch_size=payload.pdfBatchSize,
+        reset=not payload.resume,
+    )
     if task.get("modelId") not in TASK_MODEL_IDS:
         raise HTTPException(status_code=400, detail="This model does not support background processing")
     pending = [b for b in (task.get("batches") or []) if b.get("status") == "pending"]
     if not pending:
         job = ensure_task_job(task_id)
         job["state"] = "completed"
-        return {"queued": False, "state": "completed", "batchesTotal": 0}
+        return {"queued": False, "state": "completed", "batchesTotal": 0, "task": task}
+    if changed:
+        task["updatedAt"] = int(time.time() * 1000)
+        await run_in_threadpool(write_task_bundle, task_id, task)
     info = enqueue_task_processing(task_id, task)
     return {
         "queued": info["queued"],
         "state": info["state"],
         "ahead": info.get("ahead", 0),
         "batchesTotal": info.get("batchesTotal", 0),
+        "task": hydrate_task_detail(task_id, task),
     }
 
 
@@ -3212,150 +3711,94 @@ async def release_ocr_slot() -> None:
     ocr_semaphore.release()
 
 
-async def run_ocr_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
-    await acquire_ocr_slot(
-        "paddleocr-vl-1.6",
-        "PaddleOCR-VL service is not ready. Switch to this model and wait for it to become ready.",
-    )
+def parse_ovisocr2_response(data: dict) -> dict:
+    if not isinstance(data, dict) or "layoutParsingResults" not in data:
+        raise HTTPException(status_code=500, detail="Unexpected response format from OvisOCR2")
+    return data
+
+
+def make_ppocr_response_parser(model_name: str, parser_name: str):
+    def parse_response(data: dict) -> dict:
+        return parse_ppocr_response(data, model_name=model_name, parser_name=parser_name)
+
+    return parse_response
+
+
+# One entry per model instead of five near-identical run_*/proxy* pairs:
+# service URL, payload builder, response parser and readiness gating all
+# differ only by these constants.
+MODEL_OCR_RUNNERS = {
+    "paddleocr-vl-1.6": {
+        "service_url": PADDLE_SERVICE_URL,
+        "build_payload": build_pipeline_payload,
+        "parse_response": parse_pipeline_response,
+        "not_ready_message": "PaddleOCR-VL service is not ready. Switch to this model and wait for it to become ready.",
+        "log_name": "Pipeline",
+    },
+    "pp-ocrv6": {
+        "service_url": PADDLE_OCR_SERVICE_URL,
+        "build_payload": build_ppocr_payload,
+        "parse_response": make_ppocr_response_parser(PPOCR_V6_MODEL_NAME, "pp-ocrv6"),
+        "not_ready_message": "PP-OCRv6 service is not ready. Switch to this model and wait for it to become ready.",
+        "log_name": "PP-OCR",
+    },
+    "pp-ocrv6-rapid": {
+        "service_url": RAPIDOCR_SERVICE_URL,
+        "build_payload": build_ppocr_payload,
+        "parse_response": make_ppocr_response_parser(RAPIDOCR_MODEL_NAME, "pp-ocrv6-rapid"),
+        "not_ready_message": "RapidOCR service is not ready. Switch to this model and wait for it to become ready.",
+        "log_name": "RapidOCR",
+    },
+    "unlimited-ocr": {
+        "service_url": UNLIMITED_OCR_SERVICE_URL,
+        "build_payload": build_unlimited_ocr_payload,
+        "parse_response": parse_unlimited_ocr_response,
+        "not_ready_message": "Unlimited-OCR service is not ready. Switch to this model and wait for it to become ready.",
+        "log_name": "Unlimited-OCR",
+        "enabled": lambda: ENABLE_UNLIMITED_OCR,
+        "disabled_detail": "Unlimited-OCR is not enabled",
+    },
+    "ovisocr2": {
+        "service_url": OVISOCR2_SERVICE_URL,
+        "build_payload": build_ovisocr2_payload,
+        "parse_response": parse_ovisocr2_response,
+        "not_ready_message": "OvisOCR2 service is not ready. Switch to this model and wait for it to become ready.",
+        "log_name": "OvisOCR2",
+        "enabled": lambda: ENABLE_OVISOCR2,
+        "disabled_detail": "OvisOCR2 is not enabled",
+    },
+}
+
+
+async def run_model_request(model_id: str, ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
+    config = MODEL_OCR_RUNNERS.get(model_id)
+    if config is None:
+        raise HTTPException(status_code=400, detail=f"Unknown model id: {model_id}")
+    enabled = config.get("enabled")
+    if enabled is not None and not enabled():
+        raise HTTPException(status_code=404, detail=config["disabled_detail"])
+    await acquire_ocr_slot(model_id, config["not_ready_message"])
     try:
         base64_data, file_type = prepare_service_input(ocr_request, raw_input)
-        payload = build_pipeline_payload(ocr_request, base64_data, file_type)
+        payload = config["build_payload"](ocr_request, base64_data, file_type)
 
-        logger.info("Sending request to Pipeline Service at %s", PADDLE_SERVICE_URL)
+        logger.info("Sending request to %s Service at %s", config["log_name"], config["service_url"])
         timeout = PADDLE_REQUEST_TIMEOUT if PADDLE_REQUEST_TIMEOUT > 0 else None
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                PADDLE_SERVICE_URL,
+                config["service_url"],
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
-
             if resp.status_code != 200:
-                logger.warning("Service Error (HTTP %s): %s", resp.status_code, resp.text)
+                logger.warning("%s Service Error (HTTP %s): %s", config["log_name"], resp.status_code, resp.text)
                 if resp.status_code == 422:
-                    logger.warning("Validation Error Details: %s", resp.json())
-                raise HTTPException(status_code=resp.status_code, detail=f"Upstream error: {resp.text}")
-
-            return parse_pipeline_response(resp.json())
-    finally:
-        await release_ocr_slot()
-
-
-async def run_ppocrv6_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
-    await acquire_ocr_slot(
-        "pp-ocrv6",
-        "PP-OCRv6 service is not ready. Switch to this model and wait for it to become ready.",
-    )
-    try:
-        base64_data, file_type = prepare_service_input(ocr_request, raw_input)
-        payload = build_ppocr_payload(ocr_request, base64_data, file_type)
-
-        logger.info("Sending request to PP-OCR service at %s", PADDLE_OCR_SERVICE_URL)
-        timeout = PADDLE_REQUEST_TIMEOUT if PADDLE_REQUEST_TIMEOUT > 0 else None
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                PADDLE_OCR_SERVICE_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-
-            if resp.status_code != 200:
-                logger.warning("PP-OCR Service Error (HTTP %s): %s", resp.status_code, resp.text)
-                if resp.status_code == 422:
-                    logger.warning("PP-OCR Validation Error Details: %s", resp.json())
-                raise HTTPException(status_code=resp.status_code, detail=f"Upstream PP-OCR error: {resp.text}")
-
-            return parse_ppocr_response(resp.json())
-    finally:
-        await release_ocr_slot()
-
-
-async def run_rapidocr_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
-    await acquire_ocr_slot(
-        "pp-ocrv6-rapid",
-        "RapidOCR service is not ready. Switch to this model and wait for it to become ready.",
-    )
-    try:
-        base64_data, file_type = prepare_service_input(ocr_request, raw_input)
-        payload = build_ppocr_payload(ocr_request, base64_data, file_type)
-
-        logger.info("Sending request to RapidOCR adapter at %s", RAPIDOCR_SERVICE_URL)
-        timeout = PADDLE_REQUEST_TIMEOUT if PADDLE_REQUEST_TIMEOUT > 0 else None
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                RAPIDOCR_SERVICE_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            if resp.status_code != 200:
-                logger.warning("RapidOCR Service Error (HTTP %s): %s", resp.status_code, resp.text)
-                raise HTTPException(status_code=resp.status_code, detail=f"Upstream RapidOCR error: {resp.text}")
-            return parse_ppocr_response(
-                resp.json(),
-                model_name=RAPIDOCR_MODEL_NAME,
-                parser_name="pp-ocrv6-rapid",
-            )
-    finally:
-        await release_ocr_slot()
-
-
-async def run_unlimited_ocr_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
-    if not ENABLE_UNLIMITED_OCR:
-        raise HTTPException(status_code=404, detail="Unlimited-OCR is not enabled")
-
-    await acquire_ocr_slot(
-        "unlimited-ocr",
-        "Unlimited-OCR service is not ready. Switch to this model and wait for it to become ready.",
-    )
-    try:
-        base64_data, file_type = prepare_service_input(ocr_request, raw_input)
-        payload = build_unlimited_ocr_payload(ocr_request, base64_data, file_type)
-
-        logger.info("Sending request to Unlimited-OCR adapter at %s", UNLIMITED_OCR_SERVICE_URL)
-        timeout = PADDLE_REQUEST_TIMEOUT if PADDLE_REQUEST_TIMEOUT > 0 else None
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                UNLIMITED_OCR_SERVICE_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-
-            if resp.status_code != 200:
-                logger.warning("Unlimited-OCR Service Error (HTTP %s): %s", resp.status_code, resp.text)
-                raise HTTPException(status_code=resp.status_code, detail=f"Upstream Unlimited-OCR error: {resp.text}")
-
-            return parse_unlimited_ocr_response(resp.json())
-    finally:
-        await release_ocr_slot()
-
-
-async def run_ovisocr2_request(ocr_request: OCRRequest, raw_input: RawOCRInput) -> dict:
-    if not ENABLE_OVISOCR2:
-        raise HTTPException(status_code=404, detail="OvisOCR2 is not enabled")
-
-    await acquire_ocr_slot(
-        "ovisocr2",
-        "OvisOCR2 service is not ready. Switch to this model and wait for it to become ready.",
-    )
-    try:
-        base64_data, file_type = prepare_service_input(ocr_request, raw_input)
-        payload = build_ovisocr2_payload(ocr_request, base64_data, file_type)
-
-        logger.info("Sending request to OvisOCR2 adapter at %s", OVISOCR2_SERVICE_URL)
-        timeout = PADDLE_REQUEST_TIMEOUT if PADDLE_REQUEST_TIMEOUT > 0 else None
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                OVISOCR2_SERVICE_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            if resp.status_code != 200:
-                logger.warning("OvisOCR2 Service Error (HTTP %s): %s", resp.status_code, resp.text)
-                raise HTTPException(status_code=resp.status_code, detail=f"Upstream OvisOCR2 error: {resp.text}")
-            data = resp.json()
-            if not isinstance(data, dict) or "layoutParsingResults" not in data:
-                raise HTTPException(status_code=500, detail="Unexpected response format from OvisOCR2")
-            return data
+                    logger.warning("%s Validation Error Details: %s", config["log_name"], resp.text)
+                raise HTTPException(
+                    status_code=resp.status_code,
+                    detail=f"Upstream {config['log_name']} error: {resp.text}",
+                )
+            return config["parse_response"](resp.json())
     finally:
         await release_ocr_slot()
 
@@ -3396,49 +3839,35 @@ def validate_proxy_input_size(raw_input: RawOCRInput) -> int:
     return len(base64_data)
 
 
-@app.post("/api/paddleocr-vl-1.6")
-async def proxy_paddleocr_vl(request: Request):
-    """Proxy request to PaddleOCR-VL Pipeline Service."""
+async def proxy_model_ocr_request(request: Request, model_id: str, log_label: str):
     try:
         ocr_request, raw_image = await parse_ocr_input(request)
         base64_size = validate_proxy_input_size(raw_image)
-        logger.info("Received PaddleOCR-VL request. Base64 input size: %s bytes", base64_size)
-        return await run_ocr_request(ocr_request, raw_image)
+        logger.info("Received %s request. Base64 input size: %s bytes", log_label, base64_size)
+        return await run_model_request(model_id, ocr_request, raw_image)
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("PaddleOCR-VL Proxy Error")
+        logger.exception("%s Proxy Error", log_label)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/paddleocr-vl-1.6")
+async def proxy_paddleocr_vl(request: Request):
+    """Proxy request to PaddleOCR-VL Pipeline Service."""
+    return await proxy_model_ocr_request(request, "paddleocr-vl-1.6", "PaddleOCR-VL")
 
 
 @app.post("/api/pp-ocrv6")
 async def proxy_ppocrv6(request: Request):
     """Proxy request to PP-OCRv6 OCR Pipeline Service."""
-    try:
-        ocr_request, raw_image = await parse_ocr_input(request)
-        base64_size = validate_proxy_input_size(raw_image)
-        logger.info("Received PP-OCRv6 request. Base64 input size: %s bytes", base64_size)
-        return await run_ppocrv6_request(ocr_request, raw_image)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("PP-OCRv6 Proxy Error")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await proxy_model_ocr_request(request, "pp-ocrv6", "PP-OCRv6")
 
 
 @app.post("/api/pp-ocrv6-rapid")
 async def proxy_rapidocr(request: Request):
     """Proxy request to the RapidOCR (CPU) adapter service."""
-    try:
-        ocr_request, raw_image = await parse_ocr_input(request)
-        base64_size = validate_proxy_input_size(raw_image)
-        logger.info("Received RapidOCR request. Base64 input size: %s bytes", base64_size)
-        return await run_rapidocr_request(ocr_request, raw_image)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("RapidOCR Proxy Error")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await proxy_model_ocr_request(request, "pp-ocrv6-rapid", "RapidOCR")
 
 
 async def call_rapidocr_settings(method: str, payload: dict | None = None) -> dict:
@@ -3478,31 +3907,13 @@ async def put_engine_settings(request: Request):
 @app.post("/api/unlimited-ocr")
 async def proxy_unlimited_ocr(request: Request):
     """Proxy request to the optional Unlimited-OCR adapter service."""
-    try:
-        ocr_request, raw_image = await parse_ocr_input(request)
-        base64_size = validate_proxy_input_size(raw_image)
-        logger.info("Received Unlimited-OCR request. Base64 input size: %s bytes", base64_size)
-        return await run_unlimited_ocr_request(ocr_request, raw_image)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Unlimited-OCR Proxy Error")
-        raise HTTPException(status_code=500, detail=str(e))
+    return await proxy_model_ocr_request(request, "unlimited-ocr", "Unlimited-OCR")
 
 
 @app.post("/api/ovisocr2")
 async def proxy_ovisocr2(request: Request):
     """Proxy request to the optional OvisOCR2 vLLM adapter service."""
-    try:
-        ocr_request, raw_image = await parse_ocr_input(request)
-        base64_size = validate_proxy_input_size(raw_image)
-        logger.info("Received OvisOCR2 request. Base64 input size: %s bytes", base64_size)
-        return await run_ovisocr2_request(ocr_request, raw_image)
-    except HTTPException:
-        raise
-    except Exception as error:
-        logger.exception("OvisOCR2 Proxy Error")
-        raise HTTPException(status_code=500, detail=str(error))
+    return await proxy_model_ocr_request(request, "ovisocr2", "OvisOCR2")
 
 
 @app.post("/api/unlimited-ocr/stream")

@@ -1125,7 +1125,7 @@ class ServerTaskApiTests(unittest.TestCase):
                 "rec_boxes": [[10, 10, 200, 40], [10, 50, 200, 80]],
             },
         }]
-        pdf_bytes = self.server.build_relaid_pdf(ocr_results)
+        pdf_bytes = self.server.build_relaid_pdf("relaid01", ocr_results)
         self.assertGreater(len(pdf_bytes), 100)
         import fitz
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -1246,6 +1246,280 @@ class ServerTaskApiTests(unittest.TestCase):
         self.assertFalse(font_is_glyf(ttc_cff_path))
 
         self.assertFalse(font_is_glyf(str(Path(self.temp_dir.name) / "missing.ttf")))
+
+    # --- Backend-owned task schema -------------------------------------------
+
+    @staticmethod
+    def _make_pdf_bytes(page_count: int) -> bytes:
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=200, height=200)
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+
+    def _create_task(self, content: bytes, filename: str, mime: str, **fields):
+        return self.client.post(
+            "/api/tasks",
+            files={"file": (filename, content, mime)},
+            data={key: str(value) if not isinstance(value, str) else value for key, value in fields.items()},
+        )
+
+    def test_create_task_plans_batches_and_persists_source(self):
+        pdf = self._make_pdf_bytes(5)
+        response = self._create_task(pdf, "doc.pdf", "application/pdf", modelId="pp-ocrv6", pdfBatchSize=2)
+        self.assertEqual(response.status_code, 201)
+        task = response.json()
+        self.assertEqual(task["pageCount"], 5)
+        self.assertEqual(task["pdfBatchSize"], 2)
+        self.assertEqual([b["pageCount"] for b in task["batches"]], [2, 2, 1])
+        self.assertEqual([b["startPage"] for b in task["batches"]], [1, 3, 5])
+        self.assertEqual([b["endPage"] for b in task["batches"]], [2, 4, 5])
+        self.assertTrue(all(b["status"] == "pending" for b in task["batches"]))
+        self.assertEqual(task["modelId"], "pp-ocrv6")
+        self.assertEqual(task["status"], "pending")
+        task_dir = Path(self.temp_dir.name) / task["id"]
+        self.assertEqual((task_dir / "source.bin").read_bytes(), pdf)
+        self.assertIn(task["id"], task["sourceUrl"])
+
+    def test_create_task_honors_selected_pages(self):
+        pdf = self._make_pdf_bytes(6)
+        response = self._create_task(
+            pdf, "doc.pdf", "application/pdf",
+            modelId="pp-ocrv6", selectedPages=json.dumps([2, 3, 5]), pdfBatchSize=2,
+        )
+        self.assertEqual(response.status_code, 201)
+        task = response.json()
+        # Contiguous run [2,3] chunks into one batch; [5] stands alone.
+        self.assertEqual([(b["startPage"], b["endPage"]) for b in task["batches"]], [(2, 3), (5, 5)])
+        self.assertEqual(task["selectedPages"], [2, 3, 5])
+
+    def test_create_image_task_makes_single_batch(self):
+        response = self._create_task(b"\x89PNG-fake", "x.png", "image/png", modelId="pp-ocrv6", sourceKind="image")
+        self.assertEqual(response.status_code, 201)
+        task = response.json()
+        self.assertEqual(task["sourceKind"], "image")
+        self.assertEqual(task["pageCount"], 1)
+        self.assertEqual(len(task["batches"]), 1)
+        self.assertEqual(task["batches"][0]["fileType"], 1)
+
+    def test_create_task_rejects_unknown_model_and_bad_pages(self):
+        pdf = self._make_pdf_bytes(2)
+        bad_model = self._create_task(pdf, "doc.pdf", "application/pdf", modelId="nope")
+        self.assertEqual(bad_model.status_code, 400)
+        bad_pages = self._create_task(pdf, "doc.pdf", "application/pdf", modelId="pp-ocrv6", selectedPages="[9]")
+        self.assertEqual(bad_pages.status_code, 400)
+
+    def test_create_task_rejects_corrupt_pdf(self):
+        response = self._create_task(b"%PDF-broken", "x.pdf", "application/pdf", modelId="pp-ocrv6")
+        self.assertEqual(response.status_code, 400)
+
+    def test_patch_replans_batch_size_and_keeps_completed_batches(self):
+        pdf = self._make_pdf_bytes(4)
+        created = self._create_task(pdf, "doc.pdf", "application/pdf", modelId="pp-ocrv6", pdfBatchSize=1).json()
+        self.assertEqual(len(created["batches"]), 4)
+
+        patched = self.client.patch(f"/api/tasks/{created['id']}", json={"pdfBatchSize": 2})
+        self.assertEqual(patched.status_code, 200)
+        self.assertEqual(len(patched.json()["batches"]), 2)
+
+        # Once a batch is completed, the plan is frozen (resume semantics).
+        detail = self.client.get(f"/api/tasks/{created['id']}").json()
+        detail["batches"][0]["status"] = "completed"
+        self.client.put(f"/api/tasks/{created['id']}", json=detail)
+        frozen = self.client.patch(f"/api/tasks/{created['id']}", json={"pdfBatchSize": 4})
+        self.assertEqual(len(frozen.json()["batches"]), 2)
+
+    def test_patch_updates_model_and_filters_parse_settings(self):
+        created = self._create_task(self._make_pdf_bytes(1), "doc.pdf", "application/pdf", modelId="pp-ocrv6").json()
+        response = self.client.patch(
+            f"/api/tasks/{created['id']}",
+            json={"modelId": "pp-ocrv6", "parseSettings": {"useChartRecognition": True, "bogus": 1}},
+        )
+        self.assertEqual(response.status_code, 200)
+        task = response.json()
+        self.assertEqual(task["modelId"], "pp-ocrv6")
+        self.assertEqual(task["parseSettings"], {"useChartRecognition": True})
+
+    def test_process_with_reset_replans_and_applies_settings(self):
+        created = self._create_task(
+            self._make_pdf_bytes(5), "doc.pdf", "application/pdf", modelId="pp-ocrv6", pdfBatchSize=1,
+        ).json()
+
+        async def fake_runner(ocr_request, raw):
+            return self._fake_ocr_result("page")
+
+        with patch.object(self.server, "task_model_runner", return_value=fake_runner):
+            response = self.client.post(
+                f"/api/tasks/{created['id']}/process",
+                json={"resume": False, "pdfBatchSize": 5, "parseSettings": {"useChartRecognition": True}},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.json()["queued"])
+            self.assertEqual(response.json()["batchesTotal"], 1)
+            self._poll_status(created["id"], {"completed"})
+
+        detail = self.client.get(f"/api/tasks/{created['id']}").json()
+        self.assertEqual(len(detail["batches"]), 1)
+        self.assertEqual(detail["batches"][0]["pageCount"], 5)
+        self.assertEqual(detail["parseSettings"], {"useChartRecognition": True})
+
+    # --- Single text source (ppocr pages derive text from ocrLines) ---------
+
+    def _fake_ppocr_runner(self, text: str):
+        async def runner(ocr_request, raw):
+            return {
+                "markdown": f"stale snapshot {text}",
+                "images": {},
+                "layoutParsingResults": [{
+                    "parser": "pp-ocrv6-rapid",
+                    "page_index": 0,
+                    "markdown": {"text": f"stale {text}", "images": {}},
+                    "ocrLines": [{"text": text, "score": 0.9, "box": [0, 0, 10, 10]}],
+                    "prunedResult": {
+                        "rec_texts": [text],
+                        "rec_scores": [0.9],
+                        "rec_boxes": [[0, 0, 10, 10]],
+                        "rec_polys": [[[0, 0], [10, 0], [10, 10], [0, 10]]],
+                        "page_index": 0,
+                    },
+                }],
+            }
+
+        return runner
+
+    def test_ppocr_results_store_single_text_source(self):
+        created = self._create_task(b"\x89PNG-fake", "x.png", "image/png", modelId="pp-ocrv6", sourceKind="image").json()
+        runner = self._fake_ppocr_runner("hello")
+        with patch.object(self.server, "task_model_runner", return_value=runner):
+            self.client.post(f"/api/tasks/{created['id']}/process")
+            self._poll_status(created["id"], {"completed"})
+
+        task_dir = Path(self.temp_dir.name) / created["id"]
+        stored = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+        page = stored["ocrResults"][0]
+        self.assertNotIn("rec_texts", page["prunedResult"])
+        self.assertNotIn("markdown", page)
+        self.assertNotIn("markdown", stored)
+        self.assertNotIn("batchMarkdown", stored)
+        stored_task = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+        self.assertNotIn("markdown", stored_task["batches"][0])
+
+        detail = self.client.get(f"/api/tasks/{created['id']}").json()
+        self.assertEqual(detail["markdown"], "hello")
+        self.assertEqual(detail["ocrResults"][0]["prunedResult"]["rec_texts"], ["hello"])
+        self.assertEqual(detail["ocrResults"][0]["markdown"]["text"], "hello")
+
+    def test_ppocr_correction_round_trip_updates_derived_text(self):
+        created = self._create_task(b"\x89PNG-fake", "x.png", "image/png", modelId="pp-ocrv6", sourceKind="image").json()
+        runner = self._fake_ppocr_runner("hello")
+        with patch.object(self.server, "task_model_runner", return_value=runner):
+            self.client.post(f"/api/tasks/{created['id']}/process")
+            self._poll_status(created["id"], {"completed"})
+
+        # Correct the line the way the browser does: it PUTs the hydrated
+        # form (ocrLines + derived rec_texts/markdown both updated).
+        detail = self.client.get(f"/api/tasks/{created['id']}").json()
+        detail["ocrResults"][0]["ocrLines"][0]["text"] = "fixed"
+        detail["ocrResults"][0]["prunedResult"]["rec_texts"] = ["fixed"]
+        detail["markdown"] = "fixed"
+        put = self.client.put(f"/api/tasks/{created['id']}", json=detail)
+        self.assertEqual(put.status_code, 200)
+
+        task_dir = Path(self.temp_dir.name) / created["id"]
+        stored = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertNotIn("rec_texts", stored["ocrResults"][0]["prunedResult"])
+
+        refreshed = self.client.get(f"/api/tasks/{created['id']}").json()
+        self.assertEqual(refreshed["markdown"], "fixed")
+        self.assertEqual(refreshed["ocrResults"][0]["prunedResult"]["rec_texts"], ["fixed"])
+
+    # --- Page images stored as files ------------------------------------------
+
+    @staticmethod
+    def _jpeg_bytes() -> bytes:
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (40, 30), (240, 240, 240)).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    def test_page_images_persisted_as_files_and_served(self):
+        jpeg = self._jpeg_bytes()
+        data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+        created = self._create_task(b"\x89PNG-fake", "x.png", "image/png", modelId="pp-ocrv6", sourceKind="image").json()
+
+        async def runner(ocr_request, raw):
+            return {
+                "markdown": "",
+                "images": {},
+                "layoutParsingResults": [{
+                    "parser": "pp-ocrv6-rapid",
+                    "page_index": 0,
+                    "pageImage": data_url,
+                    "ocrLines": [{"text": "hi", "score": 0.9}],
+                    "prunedResult": {
+                        "rec_texts": ["hi"], "rec_scores": [0.9],
+                        "rec_boxes": [[1, 1, 20, 10]], "rec_polys": [], "page_index": 0,
+                    },
+                }],
+            }
+
+        with patch.object(self.server, "task_model_runner", return_value=runner):
+            self.client.post(f"/api/tasks/{created['id']}/process")
+            self._poll_status(created["id"], {"completed"})
+
+        task_dir = Path(self.temp_dir.name) / created["id"]
+        page_file = task_dir / "pages" / "p0001.jpg"
+        self.assertTrue(page_file.is_file())
+        self.assertEqual(page_file.read_bytes(), jpeg)
+        stored = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["ocrResults"][0]["pageImage"], "pages/p0001.jpg")
+
+        detail = self.client.get(f"/api/tasks/{created['id']}").json()
+        self.assertEqual(detail["ocrResults"][0]["pageImage"], f"/api/tasks/{created['id']}/pages/p0001.jpg")
+
+        # Corrections PUT the hydrated form back (pageImage as URL) — the
+        # write side must normalize it to the storage path again.
+        detail["ocrResults"][0]["ocrLines"][0]["text"] = "corrected"
+        put = self.client.put(f"/api/tasks/{created['id']}", json=detail)
+        self.assertEqual(put.status_code, 200)
+        stored = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["ocrResults"][0]["pageImage"], "pages/p0001.jpg")
+
+        served = self.client.get(f"/api/tasks/{created['id']}/pages/p0001.jpg")
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.headers["content-type"], "image/jpeg")
+        self.assertEqual(served.content, jpeg)
+
+        missing = self.client.get(f"/api/tasks/{created['id']}/pages/nope.jpg")
+        self.assertEqual(missing.status_code, 404)
+
+        export = self.client.get(f"/api/tasks/{created['id']}/export?format=searchable-pdf")
+        self.assertEqual(export.status_code, 200)
+        self.assertTrue(export.content.startswith(b"%PDF"))
+
+    def test_legacy_inline_page_image_still_exports(self):
+        # Tasks written before the file migration keep data-URL page images.
+        jpeg = self._jpeg_bytes()
+        task = {
+            "id": "legacyimg1", "name": "x.png", "sourceKind": "image",
+            "modelId": "pp-ocrv6-rapid", "modelName": "Rapid", "size": 1,
+            "createdAt": 1, "updatedAt": 1, "status": "completed",
+            "ocrResults": [{
+                "parser": "pp-ocrv6-rapid",
+                "pageImage": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
+                "ocrLines": [{"text": "hi"}],
+                "prunedResult": {"rec_scores": [0.9], "rec_boxes": [[1, 1, 20, 10]], "rec_polys": []},
+            }],
+        }
+        self.client.put("/api/tasks/legacyimg1", json=task)
+        # The write-side normalization migrates it to a file reference.
+        task_dir = Path(self.temp_dir.name) / "legacyimg1"
+        stored = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["ocrResults"][0]["pageImage"], "pages/p0001.jpg")
+        export = self.client.get("/api/tasks/legacyimg1/export?format=searchable-pdf")
+        self.assertEqual(export.status_code, 200)
 
 
 if __name__ == "__main__":
