@@ -76,6 +76,7 @@ window.PANDOCR_I18N = {
             '错误：任务数据格式不正确': 'Invalid task payload',
             '错误：任务没有可导出的识别结果': 'Task has no OCR results to export',
             '错误：任务没有后台作业': 'No background job for this task',
+            '错误：任务正在解析，请先取消或等待完成后再修改': 'Task job is active; cancel it or wait for it to finish before updating the task',
             '错误：该模型不支持后台解析': 'This model does not support background processing',
             '密码错误': 'Wrong password',
             '需要登录': 'Login required',

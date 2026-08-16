@@ -9,6 +9,7 @@ import io
 import json
 import re
 import logging
+import threading
 import time
 import secrets
 import contextlib
@@ -1938,26 +1939,37 @@ def write_json_file(path: Path, payload: dict) -> None:
             time.sleep(0.05)
 
 
+# Per-task write lock: every writer (job worker, corrections PUT, PATCH,
+# /process, compaction, startup recovery) funnels through write_task_bundle,
+# and all of them run on threadpool threads — a threading.Lock here
+# serializes them without touching any call site. Without it, two writers
+# can open the same task.json.tmp concurrently and interleave (observed on
+# Windows as a corrupted JSON document).
+TASK_WRITE_LOCKS: dict[str, threading.Lock] = {}
+
+
 def write_task_bundle(task_id: str, task: dict) -> dict:
     ensure_task_data_dir()
-    normalize_task_page_images(task_id, task)
-    strip_ppocr_text_duplicates(task)
-    stored_task, result_payload = split_task_for_storage(task)
-    task_dir = task_dir_path(task_id)
-    task_dir.mkdir(parents=True, exist_ok=True)
+    lock = TASK_WRITE_LOCKS.setdefault(task_id, threading.Lock())
+    with lock:
+        normalize_task_page_images(task_id, task)
+        strip_ppocr_text_duplicates(task)
+        stored_task, result_payload = split_task_for_storage(task)
+        task_dir = task_dir_path(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
 
-    result_path = task_result_path(task_id)
-    if result_payload is None:
-        pass
-    elif stored_task.get("_storage", {}).get("resultPath"):
-        write_json_file(result_path, result_payload)
-    elif result_path.exists():
-        result_path.unlink()
+        result_path = task_result_path(task_id)
+        if result_payload is None:
+            pass
+        elif stored_task.get("_storage", {}).get("resultPath"):
+            write_json_file(result_path, result_payload)
+        elif result_path.exists():
+            result_path.unlink()
 
-    write_json_file(task_file_path(task_id), stored_task)
-    summary = task_summary(stored_task)
-    write_json_file(task_summary_path(task_id), summary)
-    return stored_task
+        write_json_file(task_file_path(task_id), stored_task)
+        summary = task_summary(stored_task)
+        write_json_file(task_summary_path(task_id), summary)
+        return stored_task
 
 
 def strip_ephemeral_task_fields(task: dict) -> dict:
@@ -2056,12 +2068,22 @@ def remove_task_dir(task_id: str) -> None:
     path = task_dir_path(task_id).resolve()
     if path.parent != TASK_DATA_DIR:
         raise HTTPException(status_code=400, detail="Invalid task path")
-    if path.exists():
-        shutil.rmtree(path)
+    # Take the task's write lock (if a write is in flight, wait for it) and
+    # drop the lock entry so future writers get a fresh one.
+    lock = TASK_WRITE_LOCKS.pop(task_id, None)
+    try:
+        if lock is not None:
+            lock.acquire()
+        if path.exists():
+            shutil.rmtree(path)
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 def clear_task_dirs() -> None:
     ensure_task_data_dir()
+    TASK_WRITE_LOCKS.clear()
     for path in TASK_DATA_DIR.iterdir():
         if path.is_dir() and re.fullmatch(r"[A-Za-z0-9_-]{6,80}", path.name):
             shutil.rmtree(path)
@@ -2612,9 +2634,23 @@ async def export_task(task_id: str, format: str = Query("pdf", pattern="^(pdf|se
     )
 
 
+def reject_updates_while_job_active(task_id: str) -> None:
+    """Corrections/updates race the worker's batch writes (same temp files).
+    While a server-side job is queued/processing the disk belongs to the
+    worker — reschedule or cancel first. Browser-loop models never have a
+    server job, so their per-batch PUTs are unaffected."""
+    job = TASK_JOBS.get(task_id)
+    if job and job.get("state") in ("queued", "processing"):
+        raise HTTPException(
+            status_code=409,
+            detail="Task job is active; cancel it or wait for it to finish before updating the task",
+        )
+
+
 @app.put("/api/tasks/{task_id}")
 async def save_task(task_id: str, request: Request):
     """Persist one task to the local project data directory."""
+    reject_updates_while_job_active(task_id)
     task = await request.json()
     if not isinstance(task, dict):
         raise HTTPException(status_code=400, detail="Task payload must be a JSON object")
@@ -2639,6 +2675,7 @@ async def update_task(task_id: str, request: TaskUpdateRequest):
     path = task_file_path(task_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Task not found")
+    reject_updates_while_job_active(task_id)
     task = hydrate_task_detail(task_id, await run_in_threadpool(read_task_file, path))
     changed = apply_task_update(
         task,
@@ -2712,6 +2749,7 @@ ERROR_DETAIL_CODES = {
     "Task payload must be a JSON object": "INVALID_TASK_PAYLOAD",
     "Task has no OCR results to export": "NO_RESULTS_TO_EXPORT",
     "No job for this task": "NO_JOB_FOR_TASK",
+    "Task job is active; cancel it or wait for it to finish before updating the task": "TASK_JOB_ACTIVE",
     "This model does not support background processing": "MODEL_NO_BACKGROUND",
     "Wrong password": "AUTH_WRONG_PASSWORD",
     "Login required": "AUTH_LOGIN_REQUIRED",

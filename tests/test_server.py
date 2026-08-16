@@ -1118,6 +1118,79 @@ class ServerTaskApiTests(unittest.TestCase):
             self._poll_status("taskq40004", {"completed"})
         self.server.TASK_JOBS.pop("taskq40004", None)
 
+    def test_put_and_patch_rejected_while_job_active(self):
+        gate = {"open": False}
+
+        async def gated_runner(ocr_request, raw):
+            while not gate["open"]:
+                await asyncio.sleep(0.02)
+            return self._fake_ocr_result("page")
+
+        created = self._create_task(b"\x89PNG-fake", "x.png", "image/png", modelId="pp-ocrv6").json()
+        task_id = created["id"]
+        with patch.object(self.server, "task_model_runner", return_value=gated_runner):
+            self.client.post(f"/api/tasks/{task_id}/process")
+            self._poll_status(task_id, {"processing"})
+
+            # Corrections / intent updates race the worker's writes while a
+            # server job owns the task — both must be rejected with 409.
+            put = self.client.put(
+                f"/api/tasks/{task_id}",
+                json={**created, "status": "processing"},
+            )
+            self.assertEqual(put.status_code, 409)
+            self.assertEqual(put.json()["code"], "TASK_JOB_ACTIVE")
+            patch_response = self.client.patch(f"/api/tasks/{task_id}", json={"pdfBatchSize": 2})
+            self.assertEqual(patch_response.status_code, 409)
+
+            gate["open"] = True
+            self._poll_status(task_id, {"completed"})
+
+        # Terminal job state reopens the task for updates.
+        detail = self.client.get(f"/api/tasks/{task_id}").json()
+        detail["name"] = "renamed.png"
+        put_after = self.client.put(f"/api/tasks/{task_id}", json=detail)
+        self.assertEqual(put_after.status_code, 200)
+        self.assertEqual(self.client.get(f"/api/tasks/{task_id}").json()["name"], "renamed.png")
+        self.server.TASK_JOBS.pop(task_id, None)
+
+    def test_concurrent_task_writes_are_serialized(self):
+        # Two writers opening the same task.json.tmp interleave and corrupt
+        # the file on Windows; the per-task write lock serializes them.
+        import threading as threading_module
+
+        task_id = "writelock01"
+        base = {
+            "id": task_id, "name": "x.png", "sourceKind": "image",
+            "modelId": "pp-ocrv6", "modelName": "PP", "size": 1,
+            "createdAt": 1, "updatedAt": 1, "status": "pending",
+            "pageCount": 1, "batches": [{"id": "b1", "status": "pending", "pageCount": 1}],
+        }
+        self.server.write_task_bundle(task_id, dict(base))
+
+        names = [f"writer-{index}" for index in range(8)]
+
+        def writer(name):
+            for _ in range(6):
+                payload = dict(base, name=name)
+                self.server.write_task_bundle(task_id, payload)
+
+        threads = [threading_module.Thread(target=writer, args=(name,)) for name in names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        stored = json.loads(
+            (Path(self.temp_dir.name) / task_id / "task.json").read_text(encoding="utf-8")
+        )
+        self.assertIn(stored["name"], names)
+        summary = json.loads(
+            (Path(self.temp_dir.name) / task_id / "summary.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(summary["name"], stored["name"])
+        self.server.TASK_WRITE_LOCKS.pop(task_id, None)
+
     def test_build_relaid_pdf_positions_text_by_boxes(self):
         ocr_results = [{
             "prunedResult": {

@@ -571,6 +571,7 @@ const ERROR_CODE_I18N_KEYS = {
     INVALID_TASK_PAYLOAD: '错误：任务数据格式不正确',
     NO_RESULTS_TO_EXPORT: '错误：任务没有可导出的识别结果',
     NO_JOB_FOR_TASK: '错误：任务没有后台作业',
+    TASK_JOB_ACTIVE: '错误：任务正在解析，请先取消或等待完成后再修改',
     MODEL_NO_BACKGROUND: '错误：该模型不支持后台解析',
     AUTH_WRONG_PASSWORD: '密码错误',
     AUTH_LOGIN_REQUIRED: '需要登录',
@@ -1281,14 +1282,28 @@ function isTaskDetailLoaded(task) {
     return Boolean((task?.sourceDataUrl || task?.sourceUrl) && Array.isArray(task?.batches));
 }
 
+// Session-only fields the server never stores — kept across replacement so
+// queue polling state and legacy in-memory sources survive detail reloads.
+const TASK_SESSION_FIELDS = ['jobState', 'jobProgress', 'jobEta', 'queueAhead', 'sourceDataUrl'];
+
 function replaceTask(task) {
     const index = tasks.findIndex((item) => item.id === task.id);
     if (index === -1) {
-        tasks.unshift(task);
-        return task;
+        tasks.unshift({ ...task, detailLoaded: true });
+        return tasks[0];
     }
-    tasks[index] = { ...tasks[index], ...task, detailLoaded: true };
-    return tasks[index];
+    // The server document is authoritative: replace wholesale instead of
+    // shallow-merging, so fields the server dropped don't linger in the
+    // in-memory mirror. Only session-only fields carry over.
+    const merged = { ...task };
+    TASK_SESSION_FIELDS.forEach((key) => {
+        if (merged[key] === undefined && tasks[index][key] !== undefined) {
+            merged[key] = tasks[index][key];
+        }
+    });
+    merged.detailLoaded = true;
+    tasks[index] = merged;
+    return merged;
 }
 
 async function ensureTaskLoaded(taskId) {

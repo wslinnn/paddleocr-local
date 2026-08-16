@@ -288,6 +288,32 @@ test('page image references pass through as URLs or data URLs', () => {
 });
 
 
+test('replaceTask treats the server document as authoritative', () => {
+    evaluate("tasks = []");
+    const first = plain(evaluate(`replaceTask({
+        id: 't1', name: 'old.pdf', markdown: 'stale', thumbnail: 'thumb', pageCount: 2
+    })`));
+    assert.equal(first.detailLoaded, true);
+    evaluate("tasks[0].jobState = 'queued'");
+
+    const replaced = plain(evaluate(`replaceTask({
+        id: 't1', name: 'old.pdf', pageCount: 2
+    })`));
+    // Server-dropped fields do not linger; session-only fields carry over.
+    assert.equal('markdown' in replaced, false);
+    assert.equal('thumbnail' in replaced, false);
+    assert.equal(replaced.jobState, 'queued');
+    assert.equal(replaced.detailLoaded, true);
+    // A field the server still sends survives replacement.
+    assert.equal(replaced.pageCount, 2);
+
+    const added = plain(evaluate(`replaceTask({ id: 't2', name: 'new.pdf' })`));
+    assert.equal(added.id, 't2');
+    assert.equal(plain(evaluate('tasks.length')), 2);
+    evaluate("tasks = []");
+});
+
+
 test('binary and filename helpers produce safe deterministic values', () => {
     assert.deepEqual(
         plain(evaluate("Array.from(dataUrlToUint8Array('data:text/plain;base64,SGk='))")),
