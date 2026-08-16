@@ -1895,3 +1895,79 @@ svg {
     height: 14px;
     fill: currentColor;
 }
+
+.batch-replace-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(560px, calc(100vw - 48px));
+    max-height: min(70vh, 620px);
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 24px 64px rgba(15, 23, 42, 0.3);
+    overflow: hidden;
+}
+
+.batch-replace-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 18px;
+    min-height: 0;
+}
+
+.batch-replace-field {
+    display: grid;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.batch-replace-field input {
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.batch-replace-field input:focus {
+    outline: 2px solid var(--brand-soft);
+    border-color: var(--brand);
+}
+
+.batch-replace-preview {
+    flex: 1;
+    min-height: 120px;
+    max-height: 280px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.6;
+}
+
+.batch-replace-preview:empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--faint);
+}
+
+.batch-replace-preview:empty::before {
+    content: attr(data-hint);
+}
+
+.batch-replace-hit mark {
+    background: #fde68a;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.batch-replace-more {
+    color: var(--faint);
+    text-align: center;
+    margin-top: 4px;
+}

@@ -41,6 +41,9 @@ let tasks = [];
 let activeTaskId = null;
 let activeFilter = 'all';
 let queuePaused = false;
+// Single-level undo for corrections: entries list supports one edit and
+// batch replace alike; session-scoped (not persisted) by design.
+let lastCorrection = null;
 let activeResultView = 'markdown';
 let isProcessing = false;
 let currentPdf = null;
@@ -98,6 +101,8 @@ const els = {
     settingsPopover: document.getElementById('settings-popover'),
     cancelJobBtn: document.getElementById('cancel-job-btn'),
     engineTierSelect: document.getElementById('engine-tier-select'),
+    batchReplaceBtn: document.getElementById('batch-replace-btn'),
+    undoCorrectionBtn: document.getElementById('undo-correction-btn'),
     languageToggle: document.getElementById('language-toggle'),
     statusDot: document.getElementById('model-status-dot'),
     statusText: document.getElementById('model-status-text'),
@@ -220,6 +225,31 @@ function setupEventListeners() {
         if (!task) return;
         await cancelTaskById(task.id);
     });
+    document.addEventListener('keydown', (event) => {
+        if (!(event.ctrlKey || event.metaKey)) return;
+        const target = event.target;
+        const inTextField = target instanceof HTMLElement
+            && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT'
+                || target.isContentEditable);
+        if (event.key.toLowerCase() === 'h' && !inTextField) {
+            const task = getActiveTask();
+            if (task?.ocrResults?.length) {
+                event.preventDefault();
+                openBatchReplaceDialog(task);
+            }
+        }
+        if (event.key.toLowerCase() === 'z' && !inTextField) {
+            if (lastCorrection) {
+                event.preventDefault();
+                undoLastCorrection();
+            }
+        }
+    });
+    els.batchReplaceBtn?.addEventListener('click', () => {
+        const task = getActiveTask();
+        if (task?.ocrResults?.length) openBatchReplaceDialog(task);
+    });
+    els.undoCorrectionBtn?.addEventListener('click', () => undoLastCorrection());
     els.startBtn.addEventListener('click', () => processActiveTask());
     els.copyBtn.addEventListener('click', copyActiveResult);
     els.downloadBtn.addEventListener('click', downloadActiveTask);
@@ -2614,6 +2644,7 @@ function createPPOCRVisualPage(page, pageIndex, pageKey = '') {
         }, { once: true });
         img.addEventListener('error', () => {
             stage.classList.remove('loading');
+            page.lines.forEach((line) => { line.pageResultIndex = page.index; });
             createPPOCRTextOnlyLayer(stage, page.lines, toolbar);
         }, { once: true });
         if (displaySize) {
@@ -2792,6 +2823,11 @@ async function applyPPOCRCorrection(element, line, nextText, toolbar) {
     const previousText = line.text || '';
     if (nextText === previousText) return;
 
+    lastCorrection = {
+        taskId: getActiveTask()?.id,
+        entries: [{ pageResultIndex: line.pageResultIndex, index: line.index, oldText: previousText }],
+    };
+    updateActionState(getActiveTask());
     line.text = nextText;
     updatePPOCRLineElementText(element, nextText);
     element.classList.toggle('ocr-text-line-code', isPPOCRCodeToken(nextText));
@@ -2848,6 +2884,174 @@ async function saveCorrectedPPOCRTask() {
         console.error(error);
         alert(error.message || '\u4fdd\u5b58\u7ea0\u6b63\u5931\u8d25');
     }
+}
+
+function readStoredLineText(pageResultIndex, index) {
+    const task = getActiveTask();
+    const page = task?.ocrResults?.[pageResultIndex];
+    if (!page) return null;
+    if (Array.isArray(page.ocrLines) && page.ocrLines[index]) {
+        return String(page.ocrLines[index]?.text ?? '');
+    }
+    const pruned = page.prunedResult || {};
+    return Array.isArray(pruned.rec_texts) ? String(pruned.rec_texts[index] ?? '') : null;
+}
+
+function setStoredLineText(pageResultIndex, index, text) {
+    const task = getActiveTask();
+    const page = task?.ocrResults?.[pageResultIndex];
+    if (!page) return false;
+    updateStoredPPOCRLineText({ pageResultIndex, index }, text);
+    const element = els.markdownView.querySelector(
+        `.ocr-text-line[data-page-result-index="${pageResultIndex}"][data-line-index="${index}"],`
+        + `.ocr-text-only-line[data-page-result-index="${pageResultIndex}"][data-line-index="${index}"]`
+    );
+    if (element) {
+        updatePPOCRLineElementText(element, text);
+        element.classList.toggle('ocr-text-line-code', isPPOCRCodeToken(text));
+        if (element.classList.contains('ocr-text-line')) {
+            fitPPOCRLineElement(element, { text });
+        }
+    }
+    return true;
+}
+
+async function undoLastCorrection() {
+    if (!lastCorrection) return;
+    const task = getActiveTask();
+    if (!task || task.id !== lastCorrection.taskId) {
+        lastCorrection = null;
+        updateActionState(task);
+        return;
+    }
+    for (const entry of [...lastCorrection.entries].reverse()) {
+        setStoredLineText(entry.pageResultIndex, entry.index, entry.oldText);
+    }
+    lastCorrection = null;
+    await saveCorrectedPPOCRTask();
+    updateActionState(task);
+}
+
+function collectBatchReplaceMatches(task, findText) {
+    const matches = [];
+    (task?.ocrResults || []).forEach((page, pageResultIndex) => {
+        const pruned = page?.prunedResult || {};
+        const count = Array.isArray(page?.ocrLines)
+            ? page.ocrLines.length
+            : (Array.isArray(pruned.rec_texts) ? pruned.rec_texts.length : 0);
+        for (let index = 0; index < count; index += 1) {
+            const text = readStoredLineText(pageResultIndex, index);
+            if (text !== null && text.includes(findText)) {
+                matches.push({ pageResultIndex, index, text });
+            }
+        }
+    });
+    return matches;
+}
+
+async function applyBatchReplace(task, findText, replaceText) {
+    const matches = collectBatchReplaceMatches(task, findText);
+    if (matches.length === 0) return 0;
+    const entries = matches.map((match) => ({
+        pageResultIndex: match.pageResultIndex,
+        index: match.index,
+        oldText: match.text,
+    }));
+    matches.forEach((match) => {
+        setStoredLineText(match.pageResultIndex, match.index, match.text.split(findText).join(replaceText));
+    });
+    lastCorrection = { taskId: task.id, entries };
+    await saveCorrectedPPOCRTask();
+    updateActionState(task);
+    return matches.length;
+}
+
+function openBatchReplaceDialog(task) {
+    document.querySelector('.batch-replace-dialog')?.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-parse-dialog batch-replace-dialog';
+    overlay.innerHTML = `
+        <div class="batch-replace-panel">
+            <div class="pdf-parse-head">
+                <strong>${escapeHtml(t('批量替换'))}</strong>
+                <button type="button" class="pdf-parse-close" aria-label="${escapeHtml(t('取消'))}">&times;</button>
+            </div>
+            <div class="batch-replace-body">
+                <label class="batch-replace-field">
+                    <span>${escapeHtml(t('查找'))}</span>
+                    <input type="text" class="batch-replace-find" autocomplete="off">
+                </label>
+                <label class="batch-replace-field">
+                    <span>${escapeHtml(t('替换为'))}</span>
+                    <input type="text" class="batch-replace-replace" autocomplete="off">
+                </label>
+                <div class="batch-replace-preview" data-hint=""></div>
+            </div>
+            <div class="pdf-parse-foot">
+                <span class="pdf-parse-count batch-replace-count"></span>
+                <button type="button" class="secondary-button" data-action="cancel">${escapeHtml(t('取消'))}</button>
+                <button type="button" class="pdf-parse-start" data-action="apply" disabled>${escapeHtml(t('应用替换'))}</button>
+            </div>
+        </div>
+    `;
+    overlay.querySelector('.batch-replace-preview').dataset.hint = t('输入查找内容后显示预览');
+    const findInput = overlay.querySelector('.batch-replace-find');
+    const replaceInput = overlay.querySelector('.batch-replace-replace');
+    const preview = overlay.querySelector('.batch-replace-preview');
+    const countLabel = overlay.querySelector('.batch-replace-count');
+    const applyBtn = overlay.querySelector('[data-action="apply"]');
+
+    let settled = false;
+    const finish = () => {
+        if (settled) return;
+        settled = true;
+        overlay.remove();
+        document.removeEventListener('keydown', onKeydown, true);
+    };
+    const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+            event.stopPropagation();
+            finish();
+        }
+    };
+    document.addEventListener('keydown', onKeydown, true);
+    overlay.querySelector('.pdf-parse-close').addEventListener('click', finish);
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', finish);
+    overlay.addEventListener('mousedown', (event) => {
+        if (event.target === overlay) finish();
+    });
+
+    const highlight = (text, findText) =>
+        escapeHtml(text).split(escapeHtml(findText)).join(`<mark>${escapeHtml(findText)}</mark>`);
+
+    const refreshPreview = () => {
+        const findText = findInput.value;
+        if (!findText) {
+            preview.innerHTML = '';
+            countLabel.textContent = '';
+            applyBtn.disabled = true;
+            return;
+        }
+        const matches = collectBatchReplaceMatches(task, findText);
+        countLabel.textContent = t('命中 {count} 行', { count: matches.length });
+        applyBtn.disabled = matches.length === 0;
+        preview.innerHTML = matches.slice(0, 10).map((match) =>
+            `<div class="batch-replace-hit">${highlight(match.text, findText)}</div>`
+        ).join('') + (matches.length > 10
+            ? `<div class="batch-replace-more">… ${t('共 {count} 行', { count: matches.length })}</div>`
+            : '');
+    };
+    findInput.addEventListener('input', refreshPreview);
+
+    applyBtn.addEventListener('click', async () => {
+        applyBtn.disabled = true;
+        const count = await applyBatchReplace(task, findInput.value, replaceInput.value);
+        countLabel.textContent = t('已替换 {count} 行（{undo} 撤销）', { count, undo: 'Ctrl+Z' });
+        setTimeout(finish, 900);
+    });
+
+    document.body.appendChild(overlay);
+    findInput.focus();
 }
 
 function layoutPPOCRTextLayer(stage, page, width, height, toolbar, imageElement = null) {
@@ -2940,10 +3144,12 @@ function createPPOCRLineLabel(text) {
 function createPPOCRTextOnlyLayer(stage, lines, toolbar) {
     const fallback = document.createElement('div');
     fallback.className = 'ocr-text-only';
-    lines.forEach((line) => {
+    lines.forEach((line, lineIndex) => {
         const element = document.createElement('button');
         element.type = 'button';
         element.className = 'ocr-text-only-line';
+        element.dataset.pageResultIndex = String(line.pageResultIndex ?? '');
+        element.dataset.lineIndex = String(line.index ?? lineIndex);
         if (Number.isFinite(line.score) && line.score < PPOCR_LOW_CONFIDENCE_THRESHOLD) {
             element.classList.add('ocr-text-line-lowconf');
         }
@@ -3857,6 +4063,11 @@ function updateActionState(task) {
         'hidden',
         !(task && ['queued', 'processing'].includes(task.jobState) && supportsServerJobs(task))
     );
+    els.batchReplaceBtn?.classList.toggle('hidden', !task?.ocrResults?.length);
+    if (els.undoCorrectionBtn) {
+        els.undoCorrectionBtn.classList.toggle('hidden', !task?.ocrResults?.length);
+        els.undoCorrectionBtn.disabled = !(lastCorrection && lastCorrection.taskId === task?.id);
+    }
     updateCopyButtonState(task);
     els.downloadBtn.disabled = !hasResult;
     const startLabel = startButtonLabel(task);

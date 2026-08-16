@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PaddleOCR Local - 本地 OCR 解析工作台</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232f6df6'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-family='Arial,sans-serif' font-size='34' font-weight='700' fill='white'%3EP%3C/text%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/static/style.css?v=55">
+    <link rel="stylesheet" href="/static/style.css?v=56">
     <script src="/static/vendor/pdfjs/pdf.min.js"></script>
     <script src="/static/vendor/pdf-lib/pdf-lib.min.js"></script>
     <script src="/static/vendor/marked/marked.min.js"></script>
@@ -131,6 +131,12 @@
                                 <h2 id="result-title">解析结果</h2>
                             </div>
                             <div class="result-actions">
+                                <button class="icon-button hidden" id="batch-replace-btn" title="批量替换 (Ctrl+H)">
+                                    <svg viewBox="0 0 24 24"><path d="m16 3 5 5-5 5"/><path d="M21 8H9a6 6 0 0 0 0 12h2"/><path d="m8 21-5-5 5-5"/></svg>
+                                </button>
+                                <button class="icon-button hidden" id="undo-correction-btn" title="撤销修改 (Ctrl+Z)">
+                                    <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+                                </button>
                                 <button class="secondary-button hidden" id="cancel-job-btn" title="取消解析">
                                     <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
                                     <span>取消</span>
@@ -201,7 +207,7 @@
         </div>
     </div>
 
-    <script charset="UTF-8" src="/static/i18n.js?v=15"></script>
-    <script charset="UTF-8" src="/static/app.js?v=120"></script>
+    <script charset="UTF-8" src="/static/i18n.js?v=16"></script>
+    <script charset="UTF-8" src="/static/app.js?v=121"></script>
 </body>
 </html>
