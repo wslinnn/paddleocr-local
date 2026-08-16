@@ -2213,6 +2213,66 @@ async def cleanup_tasks(request: TaskCleanupRequest):
     return await run_in_threadpool(run_cleanup)
 
 
+# --- Error codes -------------------------------------------------------------
+# Stable identifiers for user-facing error messages so the frontend can
+# localize them via its i18n dictionary (code survives message rewording).
+# Unknown/uncoded errors degrade gracefully to showing the raw detail text.
+ERROR_DETAIL_CODES = {
+    "Task not found": "TASK_NOT_FOUND",
+    "Invalid task id": "INVALID_TASK_ID",
+    "Failed to read task": "TASK_READ_FAILED",
+    "Task source not found": "TASK_SOURCE_NOT_FOUND",
+    "Missing multipart field: file": "MISSING_FILE_FIELD",
+    "Missing JSON field: file": "MISSING_FILE_FIELD",
+    "Missing JSON field: image": "MISSING_FILE_FIELD",
+    "Invalid JSON payload": "INVALID_JSON",
+    "Invalid base64 input": "INVALID_BASE64",
+    "Invalid base64 file payload": "INVALID_BASE64",
+    "Task payload must be a JSON object": "INVALID_TASK_PAYLOAD",
+    "Task has no OCR results to export": "NO_RESULTS_TO_EXPORT",
+    "No job for this task": "NO_JOB_FOR_TASK",
+    "This model does not support background processing": "MODEL_NO_BACKGROUND",
+    "Wrong password": "AUTH_WRONG_PASSWORD",
+    "Login required": "AUTH_LOGIN_REQUIRED",
+    "Missing or invalid API token": "AUTH_TOKEN_INVALID",
+    "Only .ppt, .pptx, .doc, and .docx files are supported.": "UNSUPPORTED_OFFICE_FORMAT",
+    "Model runtime is already busy. Wait for it to finish.": "MODEL_BUSY",
+    "OCR is running. Wait for the active task before switching models.": "OCR_RUNNING",
+    "OCR is running. Wait for the active task before deploying models.": "OCR_RUNNING",
+    "OCR is running. Wait for the active task before switching backends.": "OCR_RUNNING",
+    "LibreOffice (soffice) not found on server. Please install it to support Office conversion.": "LIBREOFFICE_MISSING",
+    "File conversion timed out": "CONVERSION_TIMEOUT",
+    "Docker model control is not available": "DOCKER_CONTROL_UNAVAILABLE",
+    "Specify keepDays or keepCount": "CLEANUP_PARAMS_REQUIRED",
+}
+
+from fastapi.exceptions import HTTPException as _FastAPIHTTPException
+
+
+@app.exception_handler(_FastAPIHTTPException)
+async def coded_http_exception_handler(request: Request, exc: _FastAPIHTTPException):
+    """Default HTTPException response, plus a stable code when the detail matches."""
+    detail = exc.detail if isinstance(exc.detail, str) else None
+    code = ERROR_DETAIL_CODES.get(detail) if detail else None
+    if detail and code is None:
+        for prefix, prefix_code in (
+            ("Request body is too large", "UPLOAD_TOO_LARGE"),
+            ("Uploaded file is too large", "UPLOAD_TOO_LARGE"),
+            ("OCR input is too large", "UPLOAD_TOO_LARGE"),
+            ("RapidOCR adapter unreachable", "ADAPTER_UNREACHABLE"),
+            ("Batch timed out", "BATCH_TIMEOUT"),
+            ("PDF exceeds the", "PDF_PAGE_LIMIT"),
+            ("Unsupported or corrupt image", "UNSUPPORTED_IMAGE"),
+        ):
+            if detail.startswith(prefix):
+                code = prefix_code
+                break
+    content = {"detail": exc.detail}
+    if code:
+        content["code"] = code
+    return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
+
+
 # --- Background task queue (P1-1) -------------------------------------------
 # The browser used to orchestrate OCR synchronously (one blocking request per
 # batch, minutes-long), which fought gateway timeouts and made progress/

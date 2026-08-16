@@ -558,10 +558,42 @@ async function trySessionLogin() {
     }
 }
 
+const ERROR_CODE_I18N_KEYS = {
+    TASK_NOT_FOUND: '错误：任务不存在',
+    INVALID_TASK_ID: '错误：无效的任务 ID',
+    TASK_READ_FAILED: '错误：读取任务失败',
+    TASK_SOURCE_NOT_FOUND: '错误：源文件不存在',
+    MISSING_FILE_FIELD: '错误：请求缺少文件字段',
+    INVALID_JSON: '错误：无效的 JSON 数据',
+    INVALID_BASE64: '错误：无效的 base64 编码',
+    INVALID_TASK_PAYLOAD: '错误：任务数据格式不正确',
+    NO_RESULTS_TO_EXPORT: '错误：任务没有可导出的识别结果',
+    NO_JOB_FOR_TASK: '错误：任务没有后台作业',
+    MODEL_NO_BACKGROUND: '错误：该模型不支持后台解析',
+    AUTH_WRONG_PASSWORD: '密码错误',
+    AUTH_LOGIN_REQUIRED: '需要登录',
+    AUTH_TOKEN_INVALID: 'API 令牌缺失或无效',
+    UNSUPPORTED_OFFICE_FORMAT: '错误：仅支持 .ppt / .pptx / .doc / .docx 格式',
+    MODEL_BUSY: '模型正在切换中，请稍候',
+    OCR_RUNNING: '解析进行中，请等待当前任务完成后再操作',
+    LIBREOFFICE_MISSING: '错误：服务器未安装 LibreOffice，无法转换 Office 文档',
+    CONVERSION_TIMEOUT: '错误：文档转换超时',
+    DOCKER_CONTROL_UNAVAILABLE: '错误：Docker 控制不可用',
+    CLEANUP_PARAMS_REQUIRED: '错误：请指定保留天数或保留数量',
+    UPLOAD_TOO_LARGE: '错误：上传文件过大',
+    ADAPTER_UNREACHABLE: '错误：OCR 引擎服务不可达，请确认模型已启动',
+    BATCH_TIMEOUT: '错误：批次解析超时',
+    PDF_PAGE_LIMIT: '错误：PDF 超出页数限制',
+    UNSUPPORTED_IMAGE: '错误：不支持的图片格式或图片已损坏',
+};
+
 async function responseErrorText(response) {
     const text = await response.text();
     try {
         const data = JSON.parse(text);
+        if (data.code && ERROR_CODE_I18N_KEYS[data.code]) {
+            return t(ERROR_CODE_I18N_KEYS[data.code]);
+        }
         return data.detail || text;
     } catch (error) {
         return text;

@@ -5,12 +5,112 @@
 WebUI 的解析任务走服务端 FIFO 后台队列（text-OCR 模型）：
 
 | 端点 | 方法 | 说明 |
-| --- | --- | --- |
+| --- | --- |
 | `/api/tasks/{id}/process` | POST | 将任务的待处理批次入队（幂等），返回排队位置与批次总数 |
 | `/api/tasks/{id}/status` | GET | 轮询进度（~1.5s）：状态、已完成批次、当前批次、ETA、每批状态 |
 | `/api/tasks/{id}/cancel` | POST | 批间取消；未开始的批次保持可恢复 |
 
 另有任务源文件上传、分页读取、存储统计与清理等任务管理端点。完整端点以运行时 schema 为准：设置 `PANDOCR_ENABLE_API_DOCS=1` 后访问 `/docs`，或直接读取 `/api/openapi.json`。
+
+## 调用示例
+
+### curl
+
+```bash
+BASE=http://localhost:8000
+
+# 1. 创建任务（任务 ID 需自备：6-80 字符的字母/数字/连字符）
+TASK_ID="mydoc_$(date +%s)"
+
+# 上传源文件（PDF 或图片）
+curl -X POST "$BASE/api/tasks/$TASK_ID/source" \
+  -F "file=@document.pdf"
+
+# 保存任务元数据（含分批计划与解析设置）
+curl -X PUT "$BASE/api/tasks/$TASK_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "'$TASK_ID'",
+    "name": "document.pdf",
+    "sourceKind": "pdf",
+    "modelId": "pp-ocrv6-rapid",
+    "status": "pending",
+    "pageCount": 3,
+    "batches": [
+      {"id": "b1", "label": "第 1 页", "fileType": 0, "startPage": 1, "endPage": 1, "pageCount": 1, "status": "pending"},
+      {"id": "b2", "label": "第 2 页", "fileType": 0, "startPage": 2, "endPage": 2, "pageCount": 1, "status": "pending"},
+      {"id": "b3", "label": "第 3 页", "fileType": 0, "startPage": 3, "endPage": 3, "pageCount": 1, "status": "pending"}
+    ],
+    "parseSettings": {"useTextlineOrientation": false}
+  }'
+
+# 2. 入队（返回 {"queued":true,"state":"queued","ahead":0,"batchesTotal":3}）
+curl -X POST "$BASE/api/tasks/$TASK_ID/process"
+
+# 3. 轮询直到 state 变为 completed / error / cancelled
+watch -n 2 "curl -s $BASE/api/tasks/$TASK_ID/status | jq '{state, batchesDone, batchesTotal, etaSeconds}'"
+
+# 4. 导出结果
+curl -o result_searchable.pdf "$BASE/api/tasks/$TASK_ID/export?format=searchable-pdf"
+curl -o result_reflowed.pdf    "$BASE/api/tasks/$TASK_ID/export?format=pdf"
+curl -o result.docx            "$BASE/api/tasks/$TASK_ID/export?format=docx"
+
+# 取消（如需中断）
+curl -X POST "$BASE/api/tasks/$TASK_ID/cancel"
+
+# 清理
+curl -X DELETE "$BASE/api/tasks/$TASK_ID"
+```
+
+### Python (httpx)
+
+```python
+import time
+import httpx
+
+BASE = "http://localhost:8000"
+TASK_ID = "pydoc_001"
+
+client = httpx.Client(base_url=BASE, timeout=30)
+
+# 1. 上传 + 保存
+with open("document.pdf", "rb") as f:
+    client.post(f"/api/tasks/{TASK_ID}/source", files={"file": f})
+
+client.put(f"/api/tasks/{TASK_ID}", json={
+    "id": TASK_ID,
+    "name": "document.pdf",
+    "sourceKind": "pdf",
+    "modelId": "pp-ocrv6-rapid",
+    "status": "pending",
+    "pageCount": 1,
+    "batches": [{"id": "b1", "label": "第 1 页", "fileType": 0,
+                 "startPage": 1, "endPage": 1, "pageCount": 1, "status": "pending"}],
+    "parseSettings": {},
+})
+
+# 2. 入队
+client.post(f"/api/tasks/{TASK_ID}/process")
+
+# 3. 轮询
+while True:
+    status = client.get(f"/api/tasks/{TASK_ID}/status").json()
+    print(f"state={status['state']}  {status['batchesDone']}/{status['batchesTotal']}"
+          f"  eta={status.get('etaSeconds')}s")
+    if status["state"] in ("completed", "error", "cancelled"):
+        break
+    time.sleep(2)
+
+if status["state"] == "completed":
+    # 4. 导出
+    for fmt, name in [("searchable-pdf", "result_searchable.pdf"),
+                      ("pdf", "result_reflowed.pdf"),
+                      ("docx", "result.docx")]:
+        resp = client.get(f"/api/tasks/{TASK_ID}/export?format={fmt}")
+        with open(name, "wb") as f:
+            f.write(resp.content)
+        print(f"saved {name} ({len(resp.content)} bytes)")
+```
 
 > 以下为继承自上游的原始 API 参考文档。
 
