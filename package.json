@@ -1,0 +1,13 @@
+{
+  "name": "paddleocr-vl-webui-tests",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:frontend",
+    "test:frontend": "node --test tests/test_frontend.mjs tests/test_frontend_dom.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

@@ -27,6 +27,14 @@ step "Checking frontend JavaScript syntax"
 node --check static/i18n.js
 node --check static/app.js
 
+# Frontend tests need jsdom from npm; skip (loudly) when npm is unavailable.
+step "Running frontend tests"
+if command -v npm >/dev/null 2>&1; then
+  npm run test:frontend
+else
+  echo "npm not found — skipping frontend tests (install Node.js to run them)"
+fi
+
 step "Checking shell script syntax"
 bash -n scripts/*.sh deploy.sh build.sh start-vlm.sh test-connection.sh
 

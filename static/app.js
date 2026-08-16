@@ -101,6 +101,7 @@ const els = {
     settingsPopover: document.getElementById('settings-popover'),
     cancelJobBtn: document.getElementById('cancel-job-btn'),
     engineTierSelect: document.getElementById('engine-tier-select'),
+    pdfBatchSizeInput: document.getElementById('pdf-batch-size-input'),
     batchReplaceBtn: document.getElementById('batch-replace-btn'),
     undoCorrectionBtn: document.getElementById('undo-correction-btn'),
     languageToggle: document.getElementById('language-toggle'),

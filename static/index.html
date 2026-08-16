@@ -204,10 +204,14 @@
             <label><input type="checkbox" id="ignore-header-switch" checked> 忽略页眉</label>
             <label><input type="checkbox" id="ignore-footer-switch" checked> 忽略页脚</label>
             <label><input type="checkbox" id="ignore-number-switch" checked> 忽略页码</label>
+            <label class="setting-number">
+                <span>每批页数</span>
+                <input type="number" id="pdf-batch-size-input" min="1" max="400" step="1" value="1" inputmode="numeric">
+            </label>
         </div>
     </div>
 
     <script charset="UTF-8" src="/static/i18n.js?v=18"></script>
-    <script charset="UTF-8" src="/static/app.js?v=123"></script>
+    <script charset="UTF-8" src="/static/app.js?v=124"></script>
 </body>
 </html>

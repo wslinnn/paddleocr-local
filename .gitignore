@@ -29,6 +29,10 @@ wheels/
 *.egg
 MANIFEST
 
+# Node (frontend test toolchain)
+node_modules/
+package-lock.json
+
 # IDEs
 .vscode/
 .idea/
