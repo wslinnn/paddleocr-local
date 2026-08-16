@@ -26,7 +26,7 @@
 docker compose -f docker-compose.rapidocr.yml up -d --build
 ```
 
-启动后访问 http://localhost:8000 ，模型下拉默认只有 `PP-OCRv6 (RapidOCR·CPU)` 并自动激活。PP-OCRv6 onnx 模型在首次请求时下载到 `./model_cache_rapidocr` 缓存。可调环境变量见 `docker-compose.rapidocr.yml`（`RAPIDOCR_MODEL_TIER` 取 `tiny` / `small` / `medium`，默认 `medium`）。
+启动后访问 http://localhost:8000 ，模型下拉默认只有 `PP-OCRv6 (RapidOCR·CPU)` 并自动激活。三档 PP-OCRv6 onnx 模型（tiny/small/medium）已预置在镜像内，无需下载，前端可实时切换。引擎/线程/语种等可调环境变量见 `docker-compose.rapidocr.yml` 和 `env.txt`。
 
 > 多模型共存场景：在主 `docker-compose.yml` 中 `docker compose --profile rapidocr up -d`，RapidOCR 作为一个可选 profile 与其他模型共存。
 

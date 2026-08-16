@@ -17,15 +17,15 @@
 - [x] **纯 CPU 模型 PP-OCRv6-Rapid**：无需 GPU 与 PaddlePaddle，`docker-compose.rapidocr.yml` 两容器一键部署；tiny/small/medium 三档前端一键切换（模型预置镜像内），引擎（OpenVINO/onnxruntime）、线程、批大小、语种可配置
 - [x] **后台任务队列**：上传即时返回，进度与预计耗时实时显示，可抢占取消；关闭页面解析不中断，多任务自动排队，断点可续传，服务重启自动恢复；进行中任务置顶分区、逐项启停、全部暂停
 - [x] **PDF 选页弹窗**：缩略图网格勾选要解析的页面、逐文件确认，多文件后台并行上传
-- [x] **可视化校对**：OCR 文字框定位、低置信度行琥珀标示、结果统计（页/行/字符/置信度）、键盘导航与点击纠错、左右联动定位
+- [x] **可视化校对**：OCR 文字框定位、低置信度行琥珀标示、结果统计、键盘导航与点击纠错、左右联动定位、批量替换与撤销（Ctrl+H / Ctrl+Z）
 - [x] **导出**：TXT、重排 PDF（白底矢量文字）、可搜索 PDF（原件观感 + 全文检索）、DOCX（可编辑 Word）、Markdown/JSON，下载格式菜单
 - [x] **安全**：可选浏览器密码门禁、Docker 编排端点强制鉴权、CI 全量测试
-- [x] **体验**：全屏拖拽与 Ctrl/⌘+V 粘贴截图直接解析、任务存储管理、HiDPI 清晰渲染、中英双语
+- [x] **体验**：全屏拖拽与 Ctrl/⌘+V 粘贴截图直接解析、任务存储管理、HiDPI 清晰渲染、中英双语、错误消息中英双语（25 个错误码）
 
 <details>
 <summary>相对上游的完整变更清单</summary>
 
-见 [docs/roadmap.md](docs/roadmap.md)（24 项全状态表，含 P1 全部交付明细）。
+见 [docs/roadmap.md](docs/roadmap.md)（完整交付历史与当前状态）。
 
 </details>
 
@@ -60,7 +60,7 @@ docker compose -f docker-compose.rapidocr.yml up -d --build
 - 图片、PDF、PPT/PPTX、DOC/DOCX 解析；五模型按需部署（含纯 CPU 方案）
 - 后台任务队列：进度/预计耗时、取消、关页面不中断、批量排队、断点续传、重启恢复、全部暂停
 - 原文件与解析结果左右对照、同步缩放
-- OCR 文字框定位、低置信度标示、键盘导航、点击纠错、识别档位切换（tiny/small/medium）
+- OCR 文字框定位、低置信度标示、键盘导航、点击纠错、识别档位切换（tiny/small/medium）、批量替换与撤销
 - Markdown、表格、公式和图片区域渲染
 - 导出 Markdown、TXT、JSON、重排 PDF、可搜索 PDF、DOCX
 - 任务历史、存储占用统计与清理
@@ -72,9 +72,9 @@ docker compose -f docker-compose.rapidocr.yml up -d --build
 - [ ] 更新 README 截图（当前为旧版 UI）
 - [x] 可搜索 PDF 导出（原图层 + 不可见文字层）
 - [x] DOCX 导出（逐行段落，可编辑）
-- [ ] 校对增强：撤销 / 批量替换
-- [ ] 后端错误消息本地化
-- [ ] API 调用示例（curl / Python）
+- [x] 校对增强：撤销 / 批量替换（Ctrl+H 全局替换 + Ctrl+Z 单级撤销）
+- [x] 后端错误消息本地化（25 个错误码，中英双语）
+- [x] API 调用示例（curl / Python 补进 api.md）
 
 明确不做：表格结构识别、字段提取（需布局大模型，超出纯 CPU 轻量定位）。
 

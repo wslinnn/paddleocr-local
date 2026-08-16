@@ -74,7 +74,7 @@ NVIDIA 用户继续使用下面的 Docker 流程。
 .\windows-one-click.bat
 ```
 
-脚本会让用户从 `PaddleOCR-VL 1.6`、`PP-OCRv6`、`Unlimited-OCR`、`OvisOCR2` 中选择首次部署模型，只拉取或构建对应服务和 `pandocr-web`。随后由 WebUI 运行时控制器只启动选择的模型，并通过 `/api/model-runtime` 等待它进入 ready，避免单 GPU 同时加载多个模型。
+脚本会让用户从 `PaddleOCR-VL 1.6`、`PP-OCRv6`、`PP-OCRv6-Rapid（纯 CPU）`、`Unlimited-OCR`、`OvisOCR2` 中选择首次部署模型，只拉取或构建对应服务和 `pandocr-web`。随后由 WebUI 运行时控制器只启动选择的模型，并通过 `/api/model-runtime` 等待它进入 ready，避免单 GPU 同时加载多个模型。
 
 只做预检、不启动服务：
 
@@ -152,7 +152,7 @@ curl http://localhost:8081/health
 - `ovisocr2-api`
 - `pandocr-web`
 
-`/api/models` 应返回 `paddleocr-vl-1.6`、`pp-ocrv6`、`unlimited-ocr` 和 `ovisocr2`；未部署模型会显示为待部署。`/api/model-runtime` 应返回当前活跃模型和每个模型的真实运行状态。
+`/api/models` 应返回 `paddleocr-vl-1.6`、`pp-ocrv6`、`pp-ocrv6-rapid`、`unlimited-ocr` 和 `ovisocr2`；未部署模型会显示为待部署。`/api/model-runtime` 应返回当前活跃模型和每个模型的真实运行状态。
 
 模型健康检查端口：
 

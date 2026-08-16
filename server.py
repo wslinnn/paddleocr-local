@@ -1547,8 +1547,17 @@ def task_summary(task: dict) -> dict:
 
 
 def read_json_file(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as f:
-        payload = json.load(f)
+    # Windows: the writer's os.replace can momentarily hold the lock — the
+    # same race as write_json_file; retry briefly on the read side too.
+    for attempt in range(5):
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.05)
     if not isinstance(payload, dict):
         raise ValueError(f"{path.name} must contain a JSON object")
     return payload
