@@ -45,7 +45,11 @@ services:
       - PANDOCR_ENABLE_RAPIDOCR=1
       - PANDOCR_MODEL_CATALOG=pp-ocrv6-rapid
       - PANDOCR_ACTIVE_MODEL_ON_START=pp-ocrv6-rapid
-      - PANDOCR_MODEL_CONTROL=docker
+      # No Docker socket in this deployment: model status falls back to HTTP
+      # health probes (MODEL_CONTROL=none), which is all a single-model CPU
+      # setup needs — the socket's host-root blast radius isn't worth the
+      # container-restart convenience.
+      - PANDOCR_MODEL_CONTROL=none
       - PANDOCR_TASK_DATA_DIR=/app/data/tasks
       - PANDOCR_CORS_ORIGINS=${PANDOCR_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
       # Origin check is off by default for this CPU-only personal OCR deployment:
@@ -65,7 +69,6 @@ services:
       - ./rapidocr_adapter.py:/app/rapidocr_adapter.py:ro
       - ./Dockerfile.rapidocr:/app/Dockerfile.rapidocr:ro
       - ./data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       rapidocr-api:
         condition: service_healthy
