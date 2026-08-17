@@ -1,3 +1,9 @@
+/*
+ * Modifications Copyright (c) 2026 wslinnn
+ * This file has been modified from the upstream project
+ * https://github.com/CHEN010325/paddleocr-local (Apache-2.0).
+ */
+
 // Frontend logic tests: static/app.js runs in a bare VM context (no DOM
 // events fire — only pure functions are exercised here). DOM-level behaviour
 // lives in test_frontend_dom.mjs.

@@ -1,3 +1,7 @@
+# Modifications Copyright (c) 2026 wslinnn
+# This file has been modified from the upstream project
+# https://github.com/CHEN010325/paddleocr-local (Apache-2.0).
+
 import os
 import asyncio
 import base64

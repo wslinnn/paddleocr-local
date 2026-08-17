@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+# Modifications Copyright (c) 2026 wslinnn
+# This file has been modified from the upstream project
+# https://github.com/CHEN010325/paddleocr-local (Apache-2.0).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

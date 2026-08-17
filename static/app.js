@@ -1,3 +1,9 @@
+/*
+ * Modifications Copyright (c) 2026 wslinnn
+ * This file has been modified from the upstream project
+ * https://github.com/CHEN010325/paddleocr-local (Apache-2.0).
+ */
+
 const API_BASE = '/api';
 const DEFAULT_PDF_BATCH_SIZE = 1;
 const MAX_PDF_BATCH_SIZE = 400;
